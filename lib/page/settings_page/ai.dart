@@ -614,8 +614,18 @@ class _AISettingsState extends ConsumerState<AISettings> {
 
   Widget _buildEditForm(prompt) {
     final notifier = ref.read(userPromptsProvider.notifier);
-    final nameController = _userPromptNameControllers[prompt.id]!;
-    final contentController = _userPromptContentControllers[prompt.id]!;
+    // Create the controllers if this prompt's were not initialised yet: the
+    // expansion path above does the same, and a missing one used to be a `!`
+    // that threw while building - which paints the whole page as a plain grey
+    // box in a release build.
+    final nameController = _userPromptNameControllers.putIfAbsent(
+      prompt.id,
+      () => TextEditingController(text: prompt.name),
+    );
+    final contentController = _userPromptContentControllers.putIfAbsent(
+      prompt.id,
+      () => TextEditingController(text: prompt.content),
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
