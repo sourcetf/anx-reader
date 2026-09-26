@@ -286,6 +286,11 @@ const run = async () => {
       'line wraps are joined (a break became a space or a paragraph)')
     ok(payload?.cfi?.startsWith('epubcfi'), `the selection carries a CFI (${payload?.cfi?.slice(0, 40)})`)
     ok(!!payload?.pos && payload.pos.left >= 0, 'and a screen position for the menu')
+    // A PDF selection is highlightable, so it must not arrive flagged as a
+    // footnote (that flag hides the highlight colours); only the reader note
+    // stays unavailable, which `fixedLayout` says.
+    ok(payload?.footnote === false, `a PDF selection is not a footnote (${payload?.footnote})`)
+    ok(payload?.fixedLayout === true, 'and is reported as a fixed-layout page')
 
     // -----------------------------------------------------------------------
     console.log('\n[7] a highlight lands on the page as SVG')
@@ -357,7 +362,48 @@ const run = async () => {
   await importPage.close()
 
   // -------------------------------------------------------------------------
-  console.log('\n[11] the page reported no errors')
+  console.log('\n[11] the PDF theme colours reach the page bitmap')
+  // A page lives in its own iframe; a filter kept in the reader document cannot
+  // be referenced from there, so book.js rebuilds it inside the page and paints
+  // the bitmap through it from CSS.
+  const theme = await page.evaluate(async () => {
+    window.changeStyle({
+      pdfApplyTheme: true, backgroundColor: '#040404ff', fontColor: '#ffffe0ff',
+    })
+    await new Promise(resolve => setTimeout(resolve, 1500))
+    const contents = window.reader.view.renderer.getContents()
+    const frame = contents.find(c => c.doc?.querySelector('#canvas > canvas'))
+    const doc = frame?.doc
+    const canvas = doc?.querySelector('#canvas > canvas')
+    if (!doc || !canvas) return { missing: true }
+    const root = doc.getElementById('anx-page-colors-root')
+    const filter = root?.querySelector('filter#anx-page-colors')
+    // Paint a copy of the bitmap in the page's own document, through the same
+    // filter the stylesheet puts on the canvas, and read the result back.
+    const scratch = doc.createElement('canvas')
+    scratch.width = canvas.width
+    scratch.height = canvas.height
+    const ctx = scratch.getContext('2d')
+    ctx.filter = canvas.style.filter || getComputedStyle(canvas).filter
+    ctx.drawImage(canvas, 0, 0)
+    const pixel = Array.from(ctx.getImageData(Math.round(canvas.width / 2),
+      Math.round(canvas.height * 0.2), 1, 1).data)
+    return {
+      hasRoot: !!root,
+      filterChildren: filter ? filter.children.length : 0,
+      canvasFilter: canvas.style.filter || getComputedStyle(canvas).filter,
+      pixel,
+    }
+  })
+  ok(theme.hasRoot, 'the page document carries the theme filter')
+  ok(theme.filterChildren === 3, `the filter maps gamma, greys and the theme ramp (${theme.filterChildren})`)
+  ok(/url\(["']?#anx-page-colors["']?\)/.test(theme.canvasFilter ?? ''),
+    `the bitmap is painted through it (${theme.canvasFilter})`)
+  ok((theme.pixel?.[0] ?? 255) < 40 && (theme.pixel?.[1] ?? 255) < 40,
+    `the page comes out dark (${JSON.stringify(theme.pixel)})`)
+
+  // -------------------------------------------------------------------------
+  console.log('\n[12] the page reported no errors')
   const realErrors = errors.filter(e => !/favicon|Download the React/i.test(e))
   ok(realErrors.length === 0, 'no console/page errors', realErrors.slice(0, 3).join(' | '))
 

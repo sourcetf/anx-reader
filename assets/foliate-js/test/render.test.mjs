@@ -261,12 +261,14 @@ console.log('\n[1] a page document is rendered at the requested scale')
   }
 
   // -------------------------------------------------------------------------
-  console.log('\n[3] page colours (the PDF theme) re-render the page')
+  console.log('\n[3] the theme colours do not force a re-render')
+  // book.js paints them onto the finished bitmap from CSS, so switching the
+  // theme must leave the bitmap (and the text layer built over it) alone.
   const beforeColors = doc.querySelector('#canvas > canvas')
   await loaded.onZoom({ doc, scale: 2, pageColors: { background: '#111111', foreground: '#eeeeee' } })
   const afterColors = doc.querySelector('#canvas > canvas')
-  ok(beforeColors !== afterColors, 'switching the page colours redraws the bitmap')
-  ok(afterColors.width > 0, 'the redrawn bitmap is sized')
+  ok(beforeColors === afterColors, 'switching the page colours keeps the bitmap')
+  ok(afterColors.width > 0, 'the bitmap is still sized')
 
   book.destroy()
 }

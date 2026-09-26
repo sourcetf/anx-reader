@@ -877,7 +877,7 @@ const getRenderDpr = (page, zoom) => {
 // `#canvas` and the selectable text layer into `.textLayer`, both laid out at the
 // display scale (`zoom`) so text selection and annotation rectangles line up with
 // the canvas at any zoom.
-const render = async (page, doc, zoom, pageColors) => {
+const render = async (page, doc, zoom) => {
     if (!doc) return
 
     // Rendering tears the text layer down and builds it again, which detaches
@@ -886,9 +886,10 @@ const render = async (page, doc, zoom, pageColors) => {
     // from a ResizeObserver on any layout change, including the one a page turn
     // itself causes, so the same page gets rendered twice per turn and the
     // second pass kills the ranges TTS just built (readest #6071). Skip the work
-    // when nothing that affects the output has changed.
-    const signature = [zoom, pageColors?.background, pageColors?.foreground,
-        getFontScale(doc)].join('|')
+    // when nothing that affects the output has changed. The theme colours are
+    // not part of the output: book.js paints them onto the finished bitmap from
+    // CSS, so a theme change costs no re-render.
+    const signature = [zoom, getFontScale(doc)].join('|')
     const rendered = renderedFor.get(doc)
     // Only trust the record when the page still has a bitmap. A superseded render
     // clears the canvas, and without this the guard would skip the work that puts
@@ -945,7 +946,7 @@ const render = async (page, doc, zoom, pageColors) => {
     canvas.style.width = `${displayViewport.width}px`
     canvas.style.height = `${displayViewport.height}px`
     const canvasContext = canvas.getContext('2d')
-    const renderTask = page.render({ canvasContext, viewport: renderViewport, pageColors })
+    const renderTask = page.render({ canvasContext, viewport: renderViewport })
     activeRenderTasks.set(doc, renderTask)
 
     try {
@@ -1083,7 +1084,7 @@ const renderPage = async (page, getImageBlob) => {
         <div class="annotationLayer"></div>
     `
     const src = URL.createObjectURL(new Blob([data], { type: 'text/html' }))
-    const onZoom = ({ doc, scale, pageColors }) => render(page, doc, scale, pageColors)
+    const onZoom = ({ doc, scale }) => render(page, doc, scale)
     return { src, data, onZoom }
 }
 

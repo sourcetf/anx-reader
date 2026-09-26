@@ -24,6 +24,10 @@ class ExcerptMenu extends StatefulWidget {
   final int? id;
   final Function() onClose;
   final bool footnote;
+
+  /// A PDF page: highlights apply here, a reader note (written against a
+  /// reflowable chapter) does not.
+  final bool fixedLayout;
   final BoxDecoration decoration;
   final Function() toggleTranslationMenu;
   final void Function({bool? show}) toggleReaderNoteMenu;
@@ -40,6 +44,7 @@ class ExcerptMenu extends StatefulWidget {
     this.id,
     required this.onClose,
     required this.footnote,
+    required this.fixedLayout,
     required this.decoration,
     required this.toggleTranslationMenu,
     required this.toggleReaderNoteMenu,
@@ -87,6 +92,7 @@ class ExcerptMenuState extends State<ExcerptMenu> {
         annoColor = note.color;
       });
       if (!widget.footnote &&
+          !widget.fixedLayout &&
           note.readerNote != null &&
           note.readerNote!.isNotEmpty) {
         await widget.openReaderNoteMenu(note.id!);
@@ -342,7 +348,7 @@ class ExcerptMenuState extends State<ExcerptMenu> {
             text: L10n.of(context).contextMenuNarrate,
           ),
           // edit note
-          if (!widget.footnote)
+          if (!widget.footnote && !widget.fixedLayout)
             IconAndText(
               compact: true,
               onTap: () async {

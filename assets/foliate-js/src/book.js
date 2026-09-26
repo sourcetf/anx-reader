@@ -10,8 +10,6 @@ const { configure, ZipReader, BlobReader, TextWriter, BlobWriter } =
   await import('./vendor/zip.js')
 const { EPUB } = await import('./epub.js')
 
-var isPdf = false;
-
 const getPosition = (target) => {
   const clamp01 = value => Math.min(Math.max(value, 0), 1);
 
@@ -671,7 +669,6 @@ const getView = async file => {
     }
   }
   else if (await isPDF(file)) {
-    isPdf = true;
     const { makePDF } = await import('./pdf.js')
     book = await makePDF(file)
   }
@@ -1758,6 +1755,94 @@ const callFlutter = (name, data) => {
   window.flutter_inappwebview.callHandler(name, data)
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg'
+const PAGE_COLORS_FILTER = 'anx-page-colors'
+const PAGE_COLORS_ROOT = 'anx-page-colors-root'
+
+const toRgb = (color) => {
+  const value = String(color ?? '').trim()
+  if (value.startsWith('#')) {
+    const hex = value.slice(1)
+    const full = hex.length <= 4 ? [...hex].map(c => c + c).join('') : hex
+    const n = parseInt(full.slice(0, 6), 16)
+    if (Number.isFinite(n)) return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
+  }
+  const parts = value.match(/rgba?\(([^)]+)\)/)
+  if (parts) {
+    const rgb = parts[1].split(',').map(v => parseInt(v, 10))
+    if (rgb.length >= 3 && rgb.every(Number.isFinite)) return rgb.slice(0, 3)
+  }
+  return null
+}
+
+// pdf.js's high-contrast mapping: the page's greys are spread between the
+// theme's foreground and background (through sRGB gamma, so the mid-tones keep
+// their weight).
+const pageColorsFilter = (doc, id, fg, bg) => {
+  const transfer = (tables) => {
+    const el = doc.createElementNS(SVG_NS, 'feComponentTransfer')
+    const funcs = ['feFuncR', 'feFuncG', 'feFuncB']
+    tables.forEach((table, i) => {
+      const func = doc.createElementNS(SVG_NS, funcs[i])
+      func.setAttribute('type', 'discrete')
+      func.setAttribute('tableValues', table)
+      el.append(func)
+    })
+    return el
+  }
+  const linear = Array.from({ length: 256 }, (_, i) => {
+    const x = i / 255
+    return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4
+  }).join(',')
+  const ramp = (from, to) => Array.from({ length: 6 },
+    (_, i) => from + (i / 5) * (to - from)).join(',')
+  const filter = doc.createElementNS(SVG_NS, 'filter')
+  filter.setAttribute('color-interpolation-filters', 'sRGB')
+  filter.setAttribute('id', id)
+  filter.append(transfer([linear, linear, linear]))
+  const gray = doc.createElementNS(SVG_NS, 'feColorMatrix')
+  gray.setAttribute('type', 'matrix')
+  gray.setAttribute('values', '0.2126 0.7152 0.0722 0 0 0.2126 0.7152 0.0722 0 0 '
+    + '0.2126 0.7152 0.0722 0 0 0 0 0 1 0')
+  filter.append(gray)
+  filter.append(transfer([ramp(fg[0] / 255, bg[0] / 255),
+    ramp(fg[1] / 255, bg[1] / 255), ramp(fg[2] / 255, bg[2] / 255)]))
+  return filter
+}
+
+// pdf.js paints the theme colours by drawing the page through a filter it keeps
+// in the reader document. A page lives in its own iframe, where a reference to
+// another document's filter does not resolve, so the same filter is built inside
+// the page's document and applied to the bitmap from CSS instead.
+const ensurePageColorsFilter = (doc, pageColors) => {
+  const root = doc.getElementById(PAGE_COLORS_ROOT)
+  const fg = pageColors ? toRgb(pageColors.foreground) : null
+  const bg = pageColors ? toRgb(pageColors.background) : null
+  const key = fg && bg ? `${fg.join()}-${bg.join()}` : ''
+  const [fgKey, bgKey] = key.split('-')
+  // Black on white is what the page already looks like.
+  if (!key || key === '0,0,0-255,255,255' || fgKey === bgKey) {
+    root?.remove()
+    return null
+  }
+  if (root?.dataset.key === key) return PAGE_COLORS_FILTER
+  root?.remove()
+  const host = doc.createElement('div')
+  host.id = PAGE_COLORS_ROOT
+  host.dataset.key = key
+  host.style.cssText = 'position:absolute;width:0;height:0;visibility:hidden;'
+    + 'contain:strict;top:0;left:0;z-index:-1'
+  const svg = doc.createElementNS(SVG_NS, 'svg')
+  svg.setAttribute('width', '0')
+  svg.setAttribute('height', '0')
+  const defs = doc.createElementNS(SVG_NS, 'defs')
+  defs.append(pageColorsFilter(doc, PAGE_COLORS_FILTER, fg, bg))
+  svg.append(defs)
+  host.append(svg)
+  ;(doc.body ?? doc.documentElement).append(host)
+  return PAGE_COLORS_FILTER
+}
+
 // Fixed-layout pages live in their own iframe documents, where the reader's
 // stylesheet cannot reach them: the page-level adjustments are written into each
 // document as it loads and whenever the settings change. Only a pre-paginated
@@ -1775,6 +1860,9 @@ const applyFixedLayoutDocStyles = (doc) => {
   // replaces the first rather than stacking.
   const filters = []
   if (Number.isFinite(contrast) && contrast !== 100) filters.push(`contrast(${contrast}%)`)
+  if (ensurePageColorsFilter(doc, reader.view?.renderer?.pageColors)) {
+    filters.push(`url(#${PAGE_COLORS_FILTER})`)
+  }
   sheet.textContent = filters.length
     ? `#canvas > canvas { filter: ${filters.join(' ')}; }`
     : ''
@@ -2001,11 +2089,15 @@ window.setNoAnimation = () => {
 }
 
 const onSelectionEnd = (selection) => {
-  if (window.isFootNoteOpen() || isPdf) {
-    callFlutter('onSelectionEnd', { ...selection, footnote: true })
-  } else {
-    callFlutter('onSelectionEnd', { ...selection, footnote: false })
-  }
+  // A selection on a PDF page is an ordinary selection: it carries a CFI into
+  // the page's text layer, so it can be highlighted the same way as one in a
+  // reflowable book. `fixedLayout` only tells the menu that a reader note, which
+  // is written against a reflowable chapter, is unavailable here.
+  callFlutter('onSelectionEnd', {
+    ...selection,
+    footnote: window.isFootNoteOpen(),
+    fixedLayout: !!reader.view.isFixedLayout,
+  })
 }
 
 window.showContextMenu = () => {

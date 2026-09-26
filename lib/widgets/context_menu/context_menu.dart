@@ -24,7 +24,8 @@ Future<void> showContextMenu(
     int? annoId,
     bool footnote,
     Axis axis,
-    {String? contextText}) async {
+    {String? contextText,
+    bool fixedLayout = false}) async {
   final playerKey = epubPlayerKey.currentState;
   if (playerKey == null) return;
   bool isNewNote = false;
@@ -150,6 +151,7 @@ Future<void> showContextMenu(
       annoCfi: annoCfi,
       annoId: annoId,
       footnote: footnote,
+      fixedLayout: fixedLayout,
       contextText: contextText,
       decoration: decoration,
       onClose: onClose,
@@ -252,6 +254,7 @@ class _ContextMenuOverlay extends StatefulWidget {
     required this.annoCfi,
     required this.annoId,
     required this.footnote,
+    required this.fixedLayout,
     this.contextText,
     required this.decoration,
     required this.onClose,
@@ -271,6 +274,7 @@ class _ContextMenuOverlay extends StatefulWidget {
   final String annoCfi;
   final int? annoId;
   final bool footnote;
+  final bool fixedLayout;
   final String? contextText;
   final BoxDecoration decoration;
   final VoidCallback onClose;
@@ -531,6 +535,7 @@ class _ContextMenuOverlayState extends State<_ContextMenuOverlay>
                                   id: widget.annoId,
                                   onClose: widget.onClose,
                                   footnote: widget.footnote,
+                                  fixedLayout: widget.fixedLayout,
                                   decoration: widget.decoration,
                                   toggleTranslationMenu: _toggleTranslationMenu,
                                   toggleReaderNoteMenu: _toggleReaderNoteMenu,

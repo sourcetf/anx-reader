@@ -719,6 +719,9 @@ class EpubPlayerState extends ConsumerState<EpubPlayer>
           String cfi = location['cfi'];
           String text = location['text'];
           bool footnote = location['footnote'];
+          // A PDF page selection is highlightable, but carries no reflowable
+          // chapter for a reader note.
+          bool fixedLayout = location['fixedLayout'] as bool? ?? false;
           final rawContextText = location['contextText']?.toString();
           _lastSelectionContextText =
               (rawContextText?.trim().isEmpty ?? true) ? null : rawContextText;
@@ -738,6 +741,7 @@ class EpubPlayerState extends ConsumerState<EpubPlayer>
             footnote,
             writingMode.isVertical ? Axis.vertical : Axis.horizontal,
             contextText: _lastSelectionContextText,
+            fixedLayout: fixedLayout,
           );
         });
     controller.addJavaScriptHandler(
