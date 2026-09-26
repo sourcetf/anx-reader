@@ -429,7 +429,6 @@ export class Paginator extends HTMLElement {
   #anchor = 0 // anchor view to a fraction (0-1), Range, or Element
   #justAnchored = false
   #locked = false // while true, prevent any further navigation
-  #scrollLocked = false
   #styles
   #styleMap = new WeakMap()
   #mediaQuery = matchMedia('(prefers-color-scheme: dark)')
@@ -740,9 +739,6 @@ export class Paginator extends HTMLElement {
   get scrolled() {
     return this.getAttribute('flow') === 'scrolled'
   }
-  get primaryIndex() {
-    return this.#index
-  }
   get scrollProp() {
     const { scrolled } = this
     return this.#vertical ? (scrolled ? 'scrollLeft' : 'scrollTop')
@@ -773,30 +769,6 @@ export class Paginator extends HTMLElement {
   }
   get pages() {
     return Math.round(this.viewSize / this.size)
-  }
-  get containerPosition() {
-    return this.#container[this.scrollProp]
-  }
-  set containerPosition(newVal) {
-    this.#container[this.scrollProp] = newVal
-  }
-  get isOverflowX() {
-    return false
-  }
-  get isOverflowY() {
-    return false
-  }
-  get scrollLocked() {
-    return this.#scrollLocked
-  }
-  set scrollLocked(value) {
-    this.#scrollLocked = value
-  }
-  async pan(dx, dy) {
-    if (this.#locked) return
-    this.#locked = true
-    this.scrollBy(dx, dy)
-    this.#locked = false
   }
   scrollBy(dx, dy) {
     const element = this.#container

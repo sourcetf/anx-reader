@@ -4,7 +4,6 @@ console.log('AnxUA', navigator.userAgent)
 import './view.js'
 import { FootnoteHandler } from './footnotes.js'
 import { Overlayer } from './overlayer.js'
-import { getSelectionText, getPdfTextLayer } from './pdf-text.js'
 import { collapse, compare, fromRange, toRange } from './epubcfi.js'
 const { configure, ZipReader, BlobReader, TextWriter, BlobWriter } =
   await import('./vendor/zip.js')
@@ -70,14 +69,6 @@ const getSelectionRange = (selection) => {
   if (!selection?.rangeCount) return null;
   const range = selection.getRangeAt(0);
   return range.collapsed ? null : range;
-};
-
-// The spine index a CFI points at: `epubcfi(/6/2N...)`, where N is the spine
-// step. A fixed-layout page relocation is anchored to the page itself rather than
-// to a text range, so its CFI carries no indirection and no trailing text step.
-const getSpineIndex = (cfi) => {
-  const step = Number((`${cfi ?? ''}`.split('/')[2] ?? '').replace(/[^0-9].*$/, ''));
-  return Number.isFinite(step) && step >= 2 ? (step - 2) / 2 : null;
 };
 
 const CONTEXT_WINDOW_CHARS = 120;
@@ -159,7 +150,7 @@ const handleSelection = (view, doc, index) => {
   const cfi = view.getCFI(index, range);
   const lang = 'en-US'
 
-  let text = getSelectionText(range);
+  let text = selection.toString();
   if (!text) {
     const newSelection = range.startContainer.ownerDocument.getSelection();
     newSelection.removeAllRanges();
@@ -167,7 +158,7 @@ const handleSelection = (view, doc, index) => {
     text = newSelection.toString();
   }
 
-  const contextText = getPdfTextLayer(range) ? _collapseWhitespace(text) : buildRangeContextText(range);
+  const contextText = buildRangeContextText(range);
 
   onSelectionEnd({
     index,
@@ -1005,8 +996,7 @@ const readingFeaturesDocHandler = (doc) => {
   }
 
   // handle vertical writing mode, replace “”‘’ with 『』「」
-  // (a fixed-layout renderer reports no writing mode: its pages are pre-laid-out)
-  if (style.writingMode.startsWith('vertical') || (reader.view.renderer.writingMode ?? '').startsWith('vertical')) {
+  if (style.writingMode.startsWith('vertical') || reader.view.renderer.writingMode.startsWith('vertical')) {
     const replaceQuotes = (node) => {
       if (node.nodeType === Node.TEXT_NODE) {
         node.textContent = node.textContent
@@ -1121,22 +1111,6 @@ class Reader {
     id: null,
   }
   #ignoreBookmarkGesture = false
-
-  // The document the reader is looking at. A load event is not enough to know
-  // it: a renderer that re-shows a page it kept (a cached spread, or the flow
-  // switch back from scroll mode) does not reload its iframe, which would leave
-  // #doc pointing at a detached document and silently break selection,
-  // bookmarks and chapter content.
-  #currentDoc() {
-    const contents = this.view?.renderer?.getContents?.() ?? []
-    const primary = contents.find(x => x.index === this.view.renderer.primaryIndex) ?? contents[0]
-    return primary?.doc ?? this.#doc
-  }
-  #currentIndex() {
-    const contents = this.view?.renderer?.getContents?.() ?? []
-    const primary = contents.find(x => x.index === this.view.renderer.primaryIndex) ?? contents[0]
-    return primary?.index ?? this.#index
-  }
   constructor() {
     this.#footnoteHandler.addEventListener('before-render', e => {
       const { view } = e.detail
@@ -1162,16 +1136,10 @@ class Reader {
     this.view.addEventListener('doctouchend', this.#onTouchEnd.bind(this))
 
     setStyle()
-    // Without a stored position a reflowable book skips its cover and starts at
-    // the first text section. A pre-paginated book has no such thing: its first
-    // page (a PDF's title or cover page) is where the reader starts.
-    if (!cfi && !this.view.isFixedLayout)
+    if (!cfi)
       this.view.renderer.next()
     this.setView(this.view)
-    if (!cfi && this.view.isFixedLayout)
-      await this.view.goTo(0)
-    else
-      await this.view.init({ lastLocation: cfi })
+    await this.view.init({ lastLocation: cfi })
 
     // set html bg color to grey 
     document.documentElement.style.backgroundColor = 'grey'
@@ -1197,11 +1165,7 @@ class Reader {
     view.addEventListener('draw-annotation', e => {
       const { draw, annotation } = e.detail
       const { color, type } = annotation
-      const writingMode = this.view.renderer.writingMode
-      const opts = {
-        color,
-        vertical: `${writingMode ?? ''}`.startsWith('vertical')
-      }
+      const opts = { color, writingMode: this.view.renderer.writingMode }
       if (type === 'highlight') draw(Overlayer.highlight, { ...opts })
       else if (type === 'underline') draw(Overlayer.underline, { ...opts })
     })
@@ -1262,12 +1226,12 @@ class Reader {
   }
 
   showContextMenu() {
-    return handleSelection(this.view, this.#currentDoc(), this.#currentIndex())
+    return handleSelection(this.view, this.#doc, this.#index)
   }
 
   addAnnotation(annotation) {
     const { value } = annotation
-    const spineCode = getSpineIndex(value) ?? this.#index
+    const spineCode = (value.split('/')[2].split('!')[0] - 2) / 2
 
     const list = this.annotations.get(spineCode)
     if (list) list.push(annotation)
@@ -1336,7 +1300,7 @@ class Reader {
     const annotation = this.annotationsByValue.get(cfi)
     if (!annotation) return
     const { value } = annotation
-    const spineCode = getSpineIndex(value) ?? this.#index
+    const spineCode = (value.split('/')[2].split('!')[0] - 2) / 2
 
     const list = this.annotations.get(spineCode)
     if (list) {
@@ -1364,7 +1328,6 @@ class Reader {
     this.#doc = doc
     this.#index = index
     setSelectionHandler(this.view, doc, index)
-    if (this.view.isFixedLayout) applyFixedLayoutDocStyles(doc)
 
     // if (!this.#originalContent) {
     // console.log('Saving original content', doc);
@@ -1460,16 +1423,12 @@ class Reader {
   }
 
   readingFeatures = () => {
-    // A fixed-layout page is an image behind a transparent text layer: rewriting
-    // its text (convert Chinese, bionic reading) would desynchronise the glyphs
-    // baked into the canvas from the text the reader selects and copies.
-    if (this.view.isFixedLayout) return
     this.#restoreOriginalContent()
-    readingFeaturesDocHandler(this.#currentDoc())
+    readingFeaturesDocHandler(this.#doc)
   }
 
   getChapterContent = () => {
-    return this.#currentDoc()?.body?.textContent ?? ''
+    return this.#doc.body.textContent
   }
 
   getChapterContentByHref = async (target, options = {}) => {
@@ -1515,7 +1474,7 @@ class Reader {
   }
 
   getSelection = () => {
-    const selection = this.#currentDoc()?.getSelection?.();
+    const selection = this.#doc.getSelection();
     const range = getSelectionRange(selection);
     return range;
   }
@@ -1654,16 +1613,7 @@ class Reader {
   handleBookmark = (remove) => {
     const cfi = remove ? this.#bookmarkInfo.cfi : this.view.lastLocation?.cfi
 
-    // A fixed-layout page has no text range to quote: the bookmark carries the
-    // page it points at instead (its label, when the PDF declares page numbers).
-    const range = this.view.lastLocation.range
-    let content = ''
-    if (range?.startContainer) {
-      content = range.startContainer.data ?? range.startContainer.innerText ?? ''
-    } else {
-      const pageItem = this.view.lastLocation.pageItem
-      content = pageItem?.label ? `Page ${pageItem.label}` : ''
-    }
+    let content = this.view.lastLocation.range.startContainer.data ?? this.view.lastLocation.range.startContainer.innerText
     content = content.trim()
     if (content.length > 200) {
       content = content.slice(0, 200) + '...'
@@ -1682,8 +1632,6 @@ class Reader {
 
   get toc() {
     const sectionFractions = this.view.getSectionFractions()
-    const isFixedLayout = this.view.isFixedLayout
-    const fixedLayoutPageCount = this.view.book?.sections?.length ?? 0
     const currentHref = this.view.lastLocation?.tocItem?.href.split('#')[0] ?? 'Not Found'
     let currentChapterIndex = sectionFractions.findIndex(s => s.href === currentHref)
     if (currentChapterIndex === -1) {
@@ -1693,11 +1641,7 @@ class Reader {
     const nextSectionStart = sectionFractions[currentChapterIndex + 1]?.fraction || 1
     const currentSectionPages = this.view.lastLocation?.chapterLocation.total || 1
 
-    // A fixed-layout book has one page per section, so the chapter's page count
-    // is the book's, not a fraction of a section.
-    const totalPages = isFixedLayout && fixedLayoutPageCount
-      ? fixedLayoutPageCount
-      : currentSectionPages / (nextSectionStart - currentSectionStart)
+    const totalPages = currentSectionPages / (nextSectionStart - currentSectionStart)
 
     const getFractionByHref = (href) => {
       if (!href) return 0;
@@ -1712,14 +1656,8 @@ class Reader {
         href: item.href,
         id: item.id,
         level,
-        // A PDF outline entry carries the page it points at, so it needs no
-        // fraction arithmetic to place.
-        startPercentage: isFixedLayout && Number.isInteger(item.index) && fixedLayoutPageCount
-          ? item.index / fixedLayoutPageCount
-          : getFractionByHref(item.href),
-        startPage: isFixedLayout && Number.isInteger(item.index)
-          ? item.index + 1
-          : Math.ceil(getFractionByHref(item.href) * totalPages),
+        startPercentage: getFractionByHref(item.href),
+        startPage: Math.ceil(getFractionByHref(item.href) * totalPages),
         subitems: buildItems(item.subitems, level + 1)
       })) || [];
     }
@@ -1750,68 +1688,6 @@ const open = async (file, cfi) => {
 const callFlutter = (name, data) => {
   // console.log('callFlutter', name, data)
   window.flutter_inappwebview.callHandler(name, data)
-}
-
-// Fixed-layout pages live in their own iframe documents, where the reader's
-// stylesheet cannot reach them: the page-level adjustments are written into each
-// document as it loads and whenever the settings change.
-const applyFixedLayoutDocStyles = (doc) => {
-  if (!doc?.documentElement) return
-  const contrast = Number(style?.pdfContrast ?? 100)
-  const existing = doc.getElementById('anx-fxl-style')
-  const sheet = existing ?? doc.createElement('style')
-  if (!existing) {
-    sheet.id = 'anx-fxl-style'
-    ;(doc.head ?? doc.documentElement).append(sheet)
-  }
-  // Only one `filter` declaration may exist on the page bitmap: a second one
-  // replaces the first rather than stacking, so every adjustment is folded into
-  // the same value.
-  const filters = []
-  if (Number.isFinite(contrast) && contrast !== 100) filters.push(`contrast(${contrast}%)`)
-  sheet.textContent = filters.length
-    ? `#canvas > canvas { filter: ${filters.join(' ')}; }`
-    : ''
-}
-
-// View settings that only a fixed-layout book has: zoom and spread are renderer
-// attributes, the page colours that make a PDF follow the reader theme are a
-// renderer property, and contrast goes into the page documents themselves.
-const applyFixedLayoutSettings = () => {
-  const renderer = reader.view.renderer
-  const zoomMode = style.pdfZoomMode ?? 'fit-page'
-  renderer.setAttribute('zoom', zoomMode === 'original-size' ? '1'
-    : zoomMode === 'fit-width' ? 'fit-width' : 'fit-page')
-  renderer.setAttribute('scale-factor', String(style.pdfZoomLevel ?? 100))
-  // Only write what changes: a spread change re-lays out the book, so a needless
-  // write would rebuild the spreads under the reader on every settings tweak.
-  if (style.pdfSpreadMode && renderer.getAttribute('spread') !== style.pdfSpreadMode) {
-    renderer.setAttribute('spread', style.pdfSpreadMode)
-  }
-  if (style.pdfLockHorizontalPan) {
-    if (!renderer.hasAttribute('lock-pan-x')) renderer.setAttribute('lock-pan-x', '')
-  } else if (renderer.hasAttribute('lock-pan-x')) {
-    renderer.removeAttribute('lock-pan-x')
-  }
-  // A PDF page is an image, so the theme reaches its text by recolouring the
-  // raster (pdf.js `pageColors`) rather than by CSS. Off by default: recolouring
-  // a scanned page is not always what a reader wants.
-  const pageColors = style.pdfApplyTheme
-    ? { background: style.backgroundColor, foreground: style.fontColor }
-    : undefined
-  const current = renderer.pageColors
-  if (current?.background !== pageColors?.background
-    || current?.foreground !== pageColors?.foreground) {
-    renderer.pageColors = pageColors
-  }
-  // The renderer republishes the frames' documents on the next render; apply the
-  // stylesheet to the pages that are already showing.
-  for (const { doc } of renderer.getContents()) applyFixedLayoutDocStyles(doc)
-  // The page gap of the continuous scroll flow: the reader's side margin, in px,
-  // so a scrolled PDF keeps the same visual separation as a paginated one.
-  const sideMargin = Number(style.sideMargin ?? 0)
-  const gap = Math.round((Number.isFinite(sideMargin) ? sideMargin : 0) / 100 * window.innerWidth)
-  renderer.setAttribute('scroll-gap', `${gap}px`)
 }
 
 const setStyle = (oldStyle) => {
@@ -1874,8 +1750,6 @@ const setStyle = (oldStyle) => {
   }
   reader.view.renderer.setStyles?.(getCSS(newStyle))
 
-  if (reader.view.isFixedLayout) applyFixedLayoutSettings()
-
   if (!style.useBookStyles && style.fontColor) {
     fixHeadingColor(style.fontColor)
   }
@@ -1893,14 +1767,7 @@ const setStyle = (oldStyle) => {
 
 const refreshLayout = () => {
   const cfi = reader.view.lastLocation?.cfi
-  // A fixed-layout book keeps its own page geometry: it needs no re-measure, and
-  // stepping a section would turn to another page in the middle of a settings
-  // change. Re-anchor the current page instead.
-  if (reader.view.isFixedLayout) {
-    if (cfi) window.goToCfi(cfi)
-    return
-  }
-  Promise.resolve(window.nextSection()).then(() => {
+  window.nextSection().then(() => {
     if (cfi) {
       setTimeout(() => {
         window.goToCfi(cfi)
@@ -1919,9 +1786,6 @@ const onRelocated = (currentInfo) => {
   const bookCurrentPage = currentInfo.location.current
   const cfi = currentInfo.cfi
   const percentage = currentInfo.fraction
-  // PDF page labels (roman front matter, a body that restarts at 1) are the
-  // numbers printed on the page, as opposed to the physical page index.
-  const pageItem = currentInfo.pageItem
 
   callFlutter('onRelocated', {
     chapterTitle,
@@ -1934,7 +1798,6 @@ const onRelocated = (currentInfo) => {
     percentage,
     bookmark: currentInfo.bookmark,
     writingMode: reader.view.renderer.writingMode,
-    pageLabel: pageItem?.label ?? null,
   })
 }
 

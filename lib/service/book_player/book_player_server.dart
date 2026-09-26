@@ -123,29 +123,6 @@ class Server {
           },
         );
       }
-      // pdf.js runtime data (CMaps, standard font programs) is binary, so it
-      // has to go out as bytes; the rest of foliate-js is UTF-8 source text.
-      const binaryTypes = {
-        '.bcmap': 'application/octet-stream',
-        '.pfb': 'application/octet-stream',
-        '.ttf': 'font/ttf',
-        '.otf': 'font/otf',
-        '.woff': 'font/woff',
-        '.woff2': 'font/woff2',
-      };
-      final binaryContentType = binaryTypes[path.extension(uriPath).toLowerCase()];
-      if (binaryContentType != null) {
-        final asset =
-            await rootBundle.load('assets/foliate-js/${uriPath.substring(12)}');
-        return shelf.Response.ok(
-          asset.buffer.asUint8List(),
-          headers: {
-            'Content-Type': binaryContentType,
-            'Access-Control-Allow-Origin': '*',
-            'cache-control': 'public, max-age=31536000',
-          },
-        );
-      }
       String content =
           await _loadAsset('assets/foliate-js/${uriPath.substring(12)}');
 

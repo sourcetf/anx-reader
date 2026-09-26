@@ -1,5 +1,5 @@
 import * as CFI from './epubcfi.js'
-import { TOCProgress, SectionProgress, PageProgress } from './progress.js'
+import { TOCProgress, SectionProgress } from './progress.js'
 import { Overlayer } from './overlayer.js'
 import { textWalker } from './text-walker.js'
 import { Translator, TranslationMode } from './translator.js'
@@ -69,7 +69,6 @@ export class View extends HTMLElement {
   #sectionProgress
   #tocProgress
   #pageProgress
-  #cfiProgress
   #searchResults = new Map()
   #index
   isFixedLayout = false
@@ -102,10 +101,6 @@ export class View extends HTMLElement {
         toc: book.pageList ?? [], ids, splitHref, getFragment
       })
     }
-    // Resolves a CFI back to a location without a rendered document, which is
-    // what a PDF's per-page synthetic CFIs need (there is no document to
-    // anchor into until the page is on screen).
-    this.#cfiProgress = new PageProgress(book, this.resolveNavigation.bind(this))
 
     this.isFixedLayout = this.book.rendition?.layout === 'pre-paginated'
     if (this.isFixedLayout) {
@@ -150,7 +145,6 @@ export class View extends HTMLElement {
     this.#sectionProgress = null
     this.#tocProgress = null
     this.#pageProgress = null
-    this.#cfiProgress = null
     this.#searchResults = new Map()
     this.lastLocation = null
     this.history.clear()
@@ -184,15 +178,8 @@ export class View extends HTMLElement {
     const tocItem = this.#tocProgress?.getProgress(index, range)
     const pageItem = this.#pageProgress?.getProgress(index, range)
     const cfi = this.getCFI(index, range)
-    // A pre-paginated book has one page per section, so section progress cannot
-    // describe a page position: report the page the reader is on and the book's
-    // page count instead. For paginated flow `renderer.pages` counts spreads.
-    const totalPages = this.isFixedLayout
-      ? (this.book?.sections?.length ?? progress.section.total)
-      : (this.renderer.pages ? this.renderer.pages - 2 : progress.section.total)
-    const currentPage = this.isFixedLayout
-      ? index + 1
-      : (this.renderer.page ?? progress.section.current)
+    const totalPages = this.renderer.pages ? this.renderer.pages - 2 : progress.section.total
+    const currentPage = this.renderer.page ?? progress.section.current
     const chapterLocation = {
       current: currentPage,
       total: totalPages
@@ -358,9 +345,7 @@ export class View extends HTMLElement {
           return
         }
         const range = doc ? anchor(doc) : anchor
-        // A PDF CFI can fail to resolve (the anchor is a page-level fake CFI),
-        // in which case there is nothing to draw rather than a crash.
-        if (range) overlayer.add(value, range, Overlayer.outline, { color: '#39c5bbaa' });
+        overlayer.add(value, range, Overlayer.outline, { color: '#39c5bbaa' });
       }
       return
     }
@@ -371,10 +356,8 @@ export class View extends HTMLElement {
       overlayer.remove(value)
       if (!remove) {
         const range = doc ? anchor(doc) : anchor
-        if (range) {
-          const draw = (func, opts) => overlayer.add(value, range, func, opts)
-          this.#emit('draw-annotation', { draw, annotation, doc, range })
-        }
+        const draw = (func, opts) => overlayer.add(value, range, func, opts)
+        this.#emit('draw-annotation', { draw, annotation, doc, range })
       }
     }
     const label = this.#tocProgress.getProgress(index)?.label ?? ''
@@ -390,27 +373,13 @@ export class View extends HTMLElement {
   #createOverlayer({ doc, index }) {
     const overlayer = new Overlayer(doc)
     doc.addEventListener('click', e => {
-      // `rect` is where the hit landed on screen, so the app can anchor its
-      // annotation menu to the highlight instead of to the touch point.
-      const [value, range, rect] = overlayer.hitTest(e)
+      const [value, range] = overlayer.hitTest(e)
       if (value && !value.startsWith(SEARCH_PREFIX)) {
         e.preventDefault()
         e.stopPropagation()
-        this.#emit('show-annotation', { value, index, range, rect })
+        this.#emit('show-annotation', { value, index, range })
       }
     }, true)
-
-    let lastHitTestTime = 0
-    const THROTTLE_MS = 200
-    const isAndroid = /Android/i.test(navigator.userAgent)
-    doc.addEventListener('mousemove', (e) => {
-      if (isAndroid) return
-      const now = performance.now()
-      if (now - lastHitTestTime < THROTTLE_MS) return
-      lastHitTestTime = now
-      const [value] = overlayer.hitTest(e)
-      doc.body.style.cursor = value && !value.startsWith(SEARCH_PREFIX) ? 'pointer' : ''
-    })
 
     const list = this.#searchResults.get(index)
     if (list) for (const item of list) this.addAnnotation(item)
@@ -502,11 +471,6 @@ export class View extends HTMLElement {
     const pageItem = this.#pageProgress?.getProgress(index, range)
     return { tocItem, pageItem }
   }
-  async getCFIProgress(cfi) {
-    const progress = await this.#cfiProgress?.getProgress(cfi)
-    if (!progress || progress.index === -1) return null
-    return this.#sectionProgress?.getProgress(progress.index, progress.fraction)
-  }
   async getTOCItemOf(target) {
     try {
       const { index, anchor } = await this.resolveNavigation(target)
@@ -526,15 +490,6 @@ export class View extends HTMLElement {
   }
   async next(distance) {
     await this.renderer.next(distance)
-  }
-  async pan(dx, dy) {
-    await this.renderer.pan(dx, dy)
-  }
-  isOverflowX() {
-    return this.renderer.isOverflowX
-  }
-  isOverflowY() {
-    return this.renderer.isOverflowY
   }
   goLeft() {
     return this.book.dir === 'rtl' ? this.next() : this.prev()
@@ -601,48 +556,35 @@ export class View extends HTMLElement {
     this.#searchResults.clear()
   }
   oldValue = null
-  initTTS(stop, nodeFilter, highlighter, granularity = 'word') {
+  initTTS(stop) {
     if (stop)
       return this.#getOverlayer(this.#index)?.overlayer.remove(this.oldValue)
 
-    // A pre-paginated book shows more than one frame (a spread) or keeps a whole
-    // strip of them alive (scroll mode), so the document to read from is the
-    // primary frame rather than whichever frame happens to be first in the DOM.
-    const contents = this.renderer.getContents()
-    const primary = contents.find(x => x.index === this.renderer.primaryIndex) ?? contents[0]
-    const doc = primary?.doc
-    if (!doc) return
-    if (this.tts && this.tts.doc === doc) return
-    const ttsIndex = primary?.index ?? this.#index
+    const doc = this.renderer.getContents()[0].doc;
+    if (this.tts && this.tts.doc === doc) return;
     this.tts = new TTS(
       doc,
       textWalker,
-      nodeFilter,
-      highlighter || ((range) => {
-        const obj = this.#getOverlayer(ttsIndex);
+      (range) => {
+        const obj = this.#getOverlayer(this.#index);
         let value = null;
         if (obj) {
           const { overlayer } = obj;
           if (this.oldValue) {
             overlayer.remove(this.oldValue);
           }
-          value = this.getCFI(ttsIndex, range);
+          value = this.getCFI(this.#index, range);
           overlayer.add(value, range, Overlayer.highlight, { color: '#39c5bc83' });
           this.oldValue = value;
         }
-        // Fixed layout has no scrolling anchor to follow: the highlighted page is
-        // already the whole viewport.
-        this.renderer.scrollToAnchor?.(range);
+        this.renderer.scrollToAnchor(range);
         return value;
-      }),
-      granularity,
-      (range) => this.getCFI(ttsIndex, range),
+      },
+      (range) => this.getCFI(this.#index, range),
     );
   }
   startMediaOverlay() {
-    const contents = this.renderer.getContents()
-    const primary = contents.find(x => x.index === this.renderer.primaryIndex) ?? contents[0]
-    const { index } = primary ?? {}
+    const { index } = this.renderer.getContents()[0]
     return this.mediaOverlay.start(index)
   }
   

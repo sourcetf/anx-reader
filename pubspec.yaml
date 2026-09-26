@@ -182,9 +182,6 @@ flutter:
     - assets/foliate-js/src/
     - assets/foliate-js/src/vendor/
     - assets/foliate-js/src/vendor/pdfjs/
-    - assets/foliate-js/vendor/pdfjs/
-    - assets/foliate-js/vendor/pdfjs/cmaps/
-    - assets/foliate-js/vendor/pdfjs/standard_fonts/
     - assets/foliate-js/src/vendor/prism/
     - assets/foliate-js/src/vendor/prism/components/
     - assets/foliate-js/src/vendor/prism/themes/

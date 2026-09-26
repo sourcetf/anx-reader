@@ -192,7 +192,6 @@ class EpubPlayerState extends ConsumerState<EpubPlayer>
     styleTimer = Timer(const Duration(milliseconds: 300), () {
       if (!mounted) return;
       BookStyle style = bookStyle ?? Prefs().bookStyle;
-      String pdfSpreadMode = style.pdfSpread ? 'auto' : 'none';
       webViewController.evaluateJavascript(source: '''
       changeStyle({
         fontSize: ${style.fontSize},
@@ -217,12 +216,6 @@ class EpubPlayerState extends ConsumerState<EpubPlayer>
         useBookStyles: ${Prefs().useBookStyles},
         headingFontSize: ${style.headingFontSize},
         codeHighlightTheme: '${Prefs().codeHighlightTheme.code}',
-        pdfZoomMode: '${style.pdfZoomMode}',
-        pdfZoomLevel: ${style.pdfZoomLevel},
-        pdfSpreadMode: '$pdfSpreadMode',
-        pdfContrast: ${style.pdfContrast},
-        pdfLockHorizontalPan: ${style.pdfLockPan},
-        pdfApplyTheme: ${style.pdfApplyTheme},
       })
       ''');
     });

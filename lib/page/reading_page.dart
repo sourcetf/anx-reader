@@ -375,7 +375,6 @@ class ReadingPageState extends ConsumerState<ReadingPage>
           });
         },
         hideAppBarAndBottomBar: showOrHideAppBarAndBottomBar,
-        book: _book,
       );
     });
   }
