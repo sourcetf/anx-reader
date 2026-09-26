@@ -178,8 +178,15 @@ export class View extends HTMLElement {
     const tocItem = this.#tocProgress?.getProgress(index, range)
     const pageItem = this.#pageProgress?.getProgress(index, range)
     const cfi = this.getCFI(index, range)
-    const totalPages = this.renderer.pages ? this.renderer.pages - 2 : progress.section.total
-    const currentPage = this.renderer.page ?? progress.section.current
+    // A pre-paginated book has one page per section, so section progress cannot
+    // describe a page position: report the page the reader is on and the book's
+    // page count instead. For paginated flow `renderer.pages` counts spreads.
+    const totalPages = this.isFixedLayout
+      ? (this.book?.sections?.length ?? progress.section.total)
+      : (this.renderer.pages ? this.renderer.pages - 2 : progress.section.total)
+    const currentPage = this.isFixedLayout
+      ? index + 1
+      : (this.renderer.page ?? progress.section.current)
     const chapterLocation = {
       current: currentPage,
       total: totalPages
@@ -332,11 +339,23 @@ export class View extends HTMLElement {
       this.#emit('click-view', { x: clientX, y: clientY })
     })
   }
+  // Resolve an annotation's anchor without letting an unresolvable one (a
+  // page-level CFI has nothing to anchor into) take the reader down with it.
+  #resolveAnchor(doc, anchor) {
+    try {
+      return doc ? anchor(doc) : anchor
+    } catch (e) {
+      console.warn('Could not resolve an annotation anchor', e)
+      return null
+    }
+  }
   async addAnnotation(annotation, remove) {
     const { value } = annotation
     if (value.startsWith(SEARCH_PREFIX)) {
       const cfi = value.replace(SEARCH_PREFIX, '')
-      const { index, anchor } = await this.resolveNavigation(cfi)
+      const resolved = await this.resolveNavigation(cfi)
+      if (!resolved) return
+      const { index, anchor } = resolved
       const obj = this.#getOverlayer(index)
       if (obj) {
         const { overlayer, doc } = obj
@@ -344,20 +363,24 @@ export class View extends HTMLElement {
           overlayer.remove(value)
           return
         }
-        const range = doc ? anchor(doc) : anchor
-        overlayer.add(value, range, Overlayer.outline, { color: '#39c5bbaa' });
+        const range = this.#resolveAnchor(doc, anchor)
+        if (range) overlayer.add(value, range, Overlayer.outline, { color: '#39c5bbaa' });
       }
       return
     }
-    const { index, anchor } = await this.resolveNavigation(value)
+    const resolved = await this.resolveNavigation(value)
+    if (!resolved) return
+    const { index, anchor } = resolved
     const obj = this.#getOverlayer(index)
     if (obj) {
       const { overlayer, doc } = obj
       overlayer.remove(value)
       if (!remove) {
-        const range = doc ? anchor(doc) : anchor
-        const draw = (func, opts) => overlayer.add(value, range, func, opts)
-        this.#emit('draw-annotation', { draw, annotation, doc, range })
+        const range = this.#resolveAnchor(doc, anchor)
+        if (range) {
+          const draw = (func, opts) => overlayer.add(value, range, func, opts)
+          this.#emit('draw-annotation', { draw, annotation, doc, range })
+        }
       }
     }
     const label = this.#tocProgress.getProgress(index)?.label ?? ''
@@ -577,7 +600,9 @@ export class View extends HTMLElement {
           overlayer.add(value, range, Overlayer.highlight, { color: '#39c5bc83' });
           this.oldValue = value;
         }
-        this.renderer.scrollToAnchor(range);
+        // A fixed-layout renderer has no scrolling anchor to follow: the page is
+        // the whole viewport already.
+        this.renderer.scrollToAnchor?.(range);
         return value;
       },
       (range) => this.getCFI(this.#index, range),

@@ -96,6 +96,13 @@ String generateUrl(
     'useBookStyles': Prefs().useBookStyles,
     'headingFontSize': bookStyle.headingFontSize,
     'codeHighlightTheme': Prefs().codeHighlightTheme.code,
+    // Fixed-layout (PDF) page settings
+    'pdfZoomMode': bookStyle.pdfZoomMode,
+    'pdfZoomLevel': bookStyle.pdfZoomLevel,
+    'pdfSpreadMode': bookStyle.pdfSpread ? 'auto' : 'none',
+    'pdfContrast': bookStyle.pdfContrast,
+    'pdfLockHorizontalPan': bookStyle.pdfLockPan,
+    'pdfApplyTheme': bookStyle.pdfApplyTheme,
   };
 
   Map<String, dynamic> readingRules = {

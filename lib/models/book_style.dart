@@ -16,6 +16,20 @@ class BookStyle {
   double headingFontSize;
   double columnThreshold;
 
+  // Fixed-layout (PDF) page settings
+  /// 'fit-page', 'fit-width' or 'original-size'
+  String pdfZoomMode;
+  /// Percent, 50..500
+  int pdfZoomLevel;
+  /// Show two pages side by side when the viewport allows it
+  bool pdfSpread;
+  /// Percent, 50..300
+  int pdfContrast;
+  /// Keep the page from moving sideways while panning vertically
+  bool pdfLockPan;
+  /// Recolour the page bitmap to follow the reading theme
+  bool pdfApplyTheme;
+
   BookStyle({
     this.fontSize = 1.4,
     this.fontFamily = 'Arial',
@@ -31,6 +45,12 @@ class BookStyle {
     this.maxColumnCount = 0,
     this.headingFontSize = 1.0,
     this.columnThreshold = 720.0,
+    this.pdfZoomMode = 'fit-page',
+    this.pdfZoomLevel = 100,
+    this.pdfSpread = true,
+    this.pdfContrast = 100,
+    this.pdfLockPan = false,
+    this.pdfApplyTheme = false,
   });
 
   BookStyle copyWith({
@@ -48,6 +68,12 @@ class BookStyle {
     int? maxColumnCount,
     double? headingFontSize,
     double? columnThreshold,
+    String? pdfZoomMode,
+    int? pdfZoomLevel,
+    bool? pdfSpread,
+    int? pdfContrast,
+    bool? pdfLockPan,
+    bool? pdfApplyTheme,
   }) {
     return BookStyle(
       fontSize: fontSize ?? this.fontSize,
@@ -64,6 +90,12 @@ class BookStyle {
       maxColumnCount: maxColumnCount ?? this.maxColumnCount,
       headingFontSize: headingFontSize ?? this.headingFontSize,
       columnThreshold: columnThreshold ?? this.columnThreshold,
+      pdfZoomMode: pdfZoomMode ?? this.pdfZoomMode,
+      pdfZoomLevel: pdfZoomLevel ?? this.pdfZoomLevel,
+      pdfSpread: pdfSpread ?? this.pdfSpread,
+      pdfContrast: pdfContrast ?? this.pdfContrast,
+      pdfLockPan: pdfLockPan ?? this.pdfLockPan,
+      pdfApplyTheme: pdfApplyTheme ?? this.pdfApplyTheme,
     );
   }
 
@@ -83,6 +115,12 @@ class BookStyle {
       'maxColumnCount': maxColumnCount,
       'headingFontSize': headingFontSize,
       'columnThreshold': columnThreshold,
+      'pdfZoomMode': pdfZoomMode,
+      'pdfZoomLevel': pdfZoomLevel,
+      'pdfSpread': pdfSpread,
+      'pdfContrast': pdfContrast,
+      'pdfLockPan': pdfLockPan,
+      'pdfApplyTheme': pdfApplyTheme,
     };
   }
 
@@ -102,7 +140,13 @@ class BookStyle {
       "indent": $indent,
       "maxColumnCount": $maxColumnCount,
       "headingFontSize": $headingFontSize,
-      "columnThreshold": $columnThreshold
+      "columnThreshold": $columnThreshold,
+      "pdfZoomMode": "$pdfZoomMode",
+      "pdfZoomLevel": $pdfZoomLevel,
+      "pdfSpread": $pdfSpread,
+      "pdfContrast": $pdfContrast,
+      "pdfLockPan": $pdfLockPan,
+      "pdfApplyTheme": $pdfApplyTheme
     }
     ''';
   }
@@ -171,6 +215,23 @@ class BookStyle {
           : data['columnThreshold'] is String
               ? double.parse(data['columnThreshold'])
               : data['columnThreshold'],
+      pdfZoomMode: data['pdfZoomMode'] is String
+          ? data['pdfZoomMode']
+          : 'fit-page',
+      pdfZoomLevel: data['pdfZoomLevel'] == null
+          ? 100
+          : data['pdfZoomLevel'] is String
+              ? int.parse(data['pdfZoomLevel'])
+              : data['pdfZoomLevel'],
+      pdfSpread: data['pdfSpread'] == null ? true : data['pdfSpread'],
+      pdfContrast: data['pdfContrast'] == null
+          ? 100
+          : data['pdfContrast'] is String
+              ? int.parse(data['pdfContrast'])
+              : data['pdfContrast'],
+      pdfLockPan: data['pdfLockPan'] == null ? false : data['pdfLockPan'],
+      pdfApplyTheme:
+          data['pdfApplyTheme'] == null ? false : data['pdfApplyTheme'],
     );
   }
 }
