@@ -708,6 +708,11 @@ export const setupPanningEvents = (doc) => {
     if (!container) return
 
     let isPanning = false
+    // A press only becomes a pan once the finger has actually moved: a long press
+    // drifts by a pixel or two, and treating that as a pan would preventDefault
+    // the press away and cancel text selection (and the menu that follows it).
+    let pendingPan = false
+    const PAN_THRESHOLD = 8
     let startX = 0
     let startY = 0
     let scrollLeft = 0
@@ -748,7 +753,7 @@ export const setupPanningEvents = (doc) => {
                              elementUnderCursor.textContent.trim().length > 0
 
         if (!hasTextUnderneath && !hasTextSelection) {
-            isPanning = true
+            pendingPan = true
             startX = e.screenX
             startY = e.screenY
 
@@ -770,6 +775,12 @@ export const setupPanningEvents = (doc) => {
     }
 
     container.onpointermove = (e) => {
+        if (pendingPan && !isPanning) {
+            const moved = Math.hypot(e.screenX - startX, e.screenY - startY)
+            if (moved < PAN_THRESHOLD) return
+            isPanning = true
+            pendingPan = false
+        }
         if (isPanning && scrollParent) {
             e.preventDefault()
 
@@ -792,6 +803,7 @@ export const setupPanningEvents = (doc) => {
     }
 
     container.onpointerup = () => {
+        pendingPan = false
         if (isPanning) {
             isPanning = false
             scrollParent = null
@@ -802,6 +814,7 @@ export const setupPanningEvents = (doc) => {
     }
 
     container.onpointerleave = () => {
+        pendingPan = false
         if (isPanning) {
             isPanning = false
             scrollParent = null
@@ -877,7 +890,13 @@ const render = async (page, doc, zoom, pageColors) => {
     const signature = [zoom, pageColors?.background, pageColors?.foreground,
         getFontScale(doc)].join('|')
     const rendered = renderedFor.get(doc)
-    if (rendered?.page === page && rendered.signature === signature) return
+    // Only trust the record when the page still has a bitmap. A superseded render
+    // clears the canvas, and without this the guard would skip the work that puts
+    // one back, leaving the page blank for good: a fast page turn or a resize
+    // mid-render was enough to see a blank page from then on.
+    const existingCanvas = doc.querySelector('#canvas > canvas')
+    const hasBitmap = !!existingCanvas && existingCanvas.width > 0 && existingCanvas.height > 0
+    if (rendered?.page === page && rendered.signature === signature && hasBitmap) return
 
     // Increment generation to invalidate any in-progress render for this doc
     const generation = (renderGenerations.get(doc) || 0) + 1

@@ -247,6 +247,20 @@ console.log('\n[1] a page document is rendered at the requested scale')
   eq(zoomed.style.width, `${natural.width * 2}px`, 'and so does its box')
 
   // -------------------------------------------------------------------------
+  console.log('\n[2b] a page left without a bitmap is rendered again')
+  {
+    // A superseded render clears the canvas; showing the same page at the same
+    // scale afterwards must redraw it instead of trusting the render record.
+    const canvasNow = doc.querySelector('#canvas > canvas')
+    canvasNow.width = 0
+    canvasNow.height = 0
+    await loaded.onZoom({ doc, scale: 2 })
+    const restored = doc.querySelector('#canvas > canvas')
+    ok(restored.width > 0 && restored.height > 0,
+      `a blank page is drawn again (${restored.width}x${restored.height})`)
+  }
+
+  // -------------------------------------------------------------------------
   console.log('\n[3] page colours (the PDF theme) re-render the page')
   const beforeColors = doc.querySelector('#canvas > canvas')
   await loaded.onZoom({ doc, scale: 2, pageColors: { background: '#111111', foreground: '#eeeeee' } })
