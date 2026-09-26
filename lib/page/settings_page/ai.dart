@@ -50,20 +50,6 @@ class _AISettingsState extends ConsumerState<AISettings> {
   Widget build(BuildContext context) {
     final l10n = L10n.of(context);
 
-    // TEMP: diagnose the blank AI settings body (removed once fixed).
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      try {
-        AnxLog.info('AISettings diag: size=${context.size},'
-            ' selectedAiService=${Prefs().selectedAiService},'
-            ' displayMode=${Prefs().aiChatDisplayMode.name},'
-            ' panelPos=${Prefs().aiPanelPosition.name},'
-            ' tools=${Prefs().enabledAiToolIds.length}');
-      } catch (e) {
-        AnxLog.info('AISettings diag threw: $e');
-      }
-    });
-
     List<Map<String, dynamic>> prompts = [
       {
         "identifier": AiPrompts.test,

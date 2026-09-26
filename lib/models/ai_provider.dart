@@ -105,6 +105,35 @@ abstract class AiProvider with _$AiProvider {
     );
   }
 
+  /// The counterpart of [AiProvider.fromJson]. Written by hand because freezed
+  /// only derives a `toJson` while `fromJson` is a one-line redirect to the
+  /// generated helper; the factory above parses field by field, so without this
+  /// the class has no way to serialise and saving a provider throws.
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        if (logoAsset != null) 'logoAsset': logoAsset,
+        'url': url,
+        'protocol': protocol.code,
+        'enabled': enabled,
+        'isBuiltin': isBuiltin,
+        'apiKeys': [
+          for (final key in apiKeys)
+            {
+              'id': key.id,
+              'key': key.key,
+              'enabled': key.enabled,
+              if (key.label != null) 'label': key.label,
+              'createdAt': key.createdAt?.toIso8601String(),
+            }
+        ],
+        'model': model,
+        'reasoningEffort': reasoningEffort.code,
+        'keyIndex': keyIndex,
+        'createdAt': createdAt?.toIso8601String(),
+        'updatedAt': updatedAt?.toIso8601String(),
+      };
+
   /// Get the current active API key (based on enabled keys and keyIndex)
   String? get currentApiKey {
     final enabledKeys = apiKeys.where((k) => k.enabled).toList();
