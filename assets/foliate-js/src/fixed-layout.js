@@ -367,18 +367,6 @@ export class FixedLayout extends HTMLElement {
         this.#touchState = null
         const touch = e.changedTouches?.[0]
         if (!state || !touch) return
-        // A horizontal swipe turns the page. A reflowable book gets this from the
-        // paginator's own scrolling; a fixed-layout page has nothing to scroll, so
-        // the swipe is translated here. Downward/upward drags stay with the app
-        // (bookmark pull-down, pull-up).
-        if (!this.#scrollMode && state.direction === 'horizontal' && !state.pinched) {
-            const dx = state.delta.x
-            const threshold = 60
-            if (Math.abs(dx) > threshold && Math.abs(dx) > Math.abs(state.delta.y)) {
-                if (dx > 0) { this.rtl ? this.next() : this.prev() }
-                else { this.rtl ? this.prev() : this.next() }
-            }
-        }
         this.dispatchEvent(new CustomEvent('doctouchend', {
             detail: { touch, touchState: state },
             bubbles: true,
