@@ -262,6 +262,47 @@ console.log('\n[2b] spread mode set before the first page is shown')
   renderer.remove()
 }
 
+
+// ---------------------------------------------------------------------------
+console.log('\n[2c] the gesture protocol matches the paginator')
+{
+  // The reader's gestures (swipe, bookmark pull-down, pull-up) and its tap maths
+  // are driven by `doctouch*` events plus the page's position/scale, which a
+  // reflowable page gets from the paginator.
+  const renderer = createRenderer()
+  const book = makeBook(6)
+  renderer.open(book)
+  await renderer.goTo({ index: 0 })
+  await nextTick()
+
+  const iframe = Array.from(renderer.shadowRoot.querySelectorAll('iframe'))
+    .find(f => f.dataset.sectionIndex != null)
+  const doc = iframe.contentDocument
+  ok(doc.position != null, 'a CSS-scaled page reports its position')
+  ok(typeof doc.scale === 'number' && doc.scale > 0, `and its scale (${doc.scale})`)
+
+  const seen = []
+  renderer.addEventListener('doctouchstart', e => seen.push(['start', e.detail.touchState.direction]))
+  renderer.addEventListener('doctouchmove', e => seen.push(['move', e.detail.touchState.direction, e.detail.touchState.delta.y]))
+  renderer.addEventListener('doctouchend', e => seen.push(['end', e.detail.touchState.direction, e.detail.touchState.delta.y]))
+  const touchEvent = (type, x, y) => {
+    const ev = new window.Event(type, { bubbles: true, cancelable: true })
+    ev.changedTouches = [{ screenX: x, screenY: y }]
+    ev.touches = [{ screenX: x, screenY: y }]
+    return ev
+  }
+  doc.dispatchEvent(touchEvent('touchstart', 100, 100))
+  doc.dispatchEvent(touchEvent('touchmove', 100, 160))
+  doc.dispatchEvent(touchEvent('touchend', 100, 160))
+  eq(seen[0]?.[0], 'start', 'a touch inside the page reaches the reader')
+  eq(seen[1]?.[1], 'vertical', 'a vertical drag is classified as vertical')
+  eq(seen[1]?.[2], 60, 'with the drag distance the gestures need')
+  eq(seen[2]?.[0], 'end', 'and the gesture ends')
+
+  renderer.destroy()
+  renderer.remove()
+}
+
 // ---------------------------------------------------------------------------
 console.log('\n[3] scroll mode')
 {

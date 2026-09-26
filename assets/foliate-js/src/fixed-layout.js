@@ -290,6 +290,10 @@ export class FixedLayout extends HTMLElement {
     // lands where the preview showed it. Using the real getBoundingClientRect
     // (not fraction maths) sidesteps gap/page-boundary and header-offset errors.
     #pinchAnchor = null
+    // Same shape as the paginator's `doctouch*` events: the app drives its
+    // gestures (swipe, bookmark pull-down, pull-up) off them, and a fixed-layout
+    // page is an iframe of its own, so the touches have to be re-emitted here.
+    #touchState = null
     #captureCenterPageRect() {
         const hostRect = this.getBoundingClientRect()
         const c = this.#scrollHorizontal
@@ -314,6 +318,70 @@ export class FixedLayout extends HTMLElement {
         const maxLeft = Math.max(0, this.scrollWidth - this.clientWidth)
         this.scrollTop = clamp(this.scrollTop + (rect.top - anchor.top), 0, maxTop)
         this.scrollLeft = clamp(this.scrollLeft + (rect.left - anchor.left), 0, maxLeft)
+    }
+    #onTouchStart = (e) => {
+        const touch = e.changedTouches?.[0]
+        if (!touch) return
+        this.#touchState = {
+            x: touch.screenX, y: touch.screenY,
+            t: e.timeStamp,
+            vx: 0, vy: 0,
+            pinched: e.touches?.length > 1,
+            direction: 'none',
+            startTouch: { x: e.touches?.[0]?.screenX ?? touch.screenX, y: e.touches?.[0]?.screenY ?? touch.screenY },
+            delta: { x: 0, y: 0 },
+            startScroll: this.#scrollMode ? this.#scrollContentPos() : 0,
+            startPage: this.index,
+            lockedOffset: null,
+            axis: this.#scrollHorizontal ? 'scrollLeft' : 'scrollTop',
+        }
+        this.dispatchEvent(new CustomEvent('doctouchstart', {
+            detail: { touch, touchState: this.#touchState },
+            bubbles: true,
+            composed: true,
+        }))
+    }
+    #onTouchMove = (e) => {
+        const state = this.#touchState
+        const touch = e.changedTouches?.[0]
+        if (!state || !touch || state.pinched) return
+        const deltaX = touch.screenX - state.startTouch.x
+        const deltaY = touch.screenY - state.startTouch.y
+        const absDeltaX = Math.abs(deltaX)
+        const absDeltaY = Math.abs(deltaY)
+        state.delta.x = deltaX
+        state.delta.y = deltaY
+        const threshold = 5
+        if (state.direction === 'none' && (absDeltaX > threshold || absDeltaY > threshold)) {
+            state.direction = absDeltaX > absDeltaY ? 'horizontal' : 'vertical'
+        }
+        this.dispatchEvent(new CustomEvent('doctouchmove', {
+            detail: { touch, touchState: state },
+            preventDefault: () => e.preventDefault(),
+            bubbles: true,
+            composed: true,
+        }))
+    }
+    #onTouchEnd = (e) => {
+        const state = this.#touchState
+        this.#touchState = null
+        const touch = e.changedTouches?.[0]
+        if (!state || !touch) return
+        this.dispatchEvent(new CustomEvent('doctouchend', {
+            detail: { touch, touchState: state },
+            bubbles: true,
+            composed: true,
+        }))
+    }
+    // `touch-action` and gestures do not cross an iframe boundary: a touch inside
+    // a page is only ours if the page's own document reports it.
+    #observeTouches(doc) {
+        if (!doc || doc.__anxFxlTouches) return
+        doc.__anxFxlTouches = true
+        doc.addEventListener('touchstart', this.#onTouchStart, { passive: true })
+        doc.addEventListener('touchmove', this.#onTouchMove, { passive: true })
+        doc.addEventListener('touchend', this.#onTouchEnd, { passive: true })
+        doc.addEventListener('touchcancel', this.#onTouchEnd, { passive: true })
     }
     #getScrollModePageMetrics() {
         return this.#scrollPages.map(page => ({
@@ -532,7 +600,7 @@ export class FixedLayout extends HTMLElement {
         for (const iframe of this.#root.querySelectorAll('iframe'))
             this.#applyPanLock(iframe.contentDocument)
     }
-    async #createFrame({ index, src: srcOption, detached = false }) {
+    async #createFrame({ index, src: srcOption, detached = false, position = 'center' }) {
         const srcOptionIsString = typeof srcOption === 'string'
         const src = srcOptionIsString ? srcOption : srcOption?.src
         const data = srcOptionIsString ? null : srcOption?.data
@@ -567,6 +635,7 @@ export class FixedLayout extends HTMLElement {
             iframe.addEventListener('load', () => {
                 const doc = iframe.contentDocument
                 this.#applyPanLock(doc)
+                this.#observeTouches(doc)
                 iframe.dataset.sectionIndex = index
                 this.dispatchEvent(new CustomEvent('load', { detail: { doc, index } }))
                 const { width, height } = getViewport(doc, this.defaultViewport)
@@ -576,6 +645,7 @@ export class FixedLayout extends HTMLElement {
                     height: parseFloat(height),
                     onZoom,
                     detached,
+                    position,
                 })
             }, { once: true })
             if (data) {
@@ -659,6 +729,14 @@ export class FixedLayout extends HTMLElement {
                 transformOrigin: 'top left',
                 display: blank ? 'none' : 'block',
             })
+            // A CSS-scaled page reports where it sits and at what scale, which is
+            // how the reader maps a tap to page coordinates (a re-rendered PDF
+            // page is already laid out at display size, so it needs neither).
+            const frameDoc = frame.iframe?.contentDocument
+            if (frameDoc && !onZoom) {
+                frameDoc.position = frame.position ?? 'center'
+                frameDoc.scale = scale
+            }
             Object.assign(element.style, {
                 width: `${(width ?? blankWidth) * scale}px`,
                 height: `${(height ?? blankHeight) * scale}px`,
@@ -787,14 +865,14 @@ export class FixedLayout extends HTMLElement {
             }
         } else {
             if (center) {
-                this.#center = await this.#createFrame(center)
+                this.#center = await this.#createFrame({ ...center, position: 'center' })
                 if (cacheKey) {
                     this.#prerenderedSpreads.set(cacheKey, { center: this.#center })
                     this.#touchSpread(cacheKey)
                 }
             } else {
-                this.#left = await this.#createFrame(left)
-                this.#right = await this.#createFrame(right)
+                this.#left = await this.#createFrame({ ...left, position: 'left' })
+                this.#right = await this.#createFrame({ ...right, position: 'right' })
                 if (cacheKey) {
                     this.#prerenderedSpreads.set(cacheKey, { left: this.#left, right: this.#right })
                     this.#touchSpread(cacheKey)
@@ -1062,6 +1140,7 @@ export class FixedLayout extends HTMLElement {
             iframe.addEventListener('load', () => {
                 const doc = iframe.contentDocument
                 this.#applyPanLock(doc)
+                this.#observeTouches(doc)
                 iframe.dataset.sectionIndex = pageData.index
                 this.dispatchEvent(new CustomEvent('load', { detail: { doc, index: pageData.index } }))
                 const { width, height } = getViewport(doc, this.defaultViewport)
