@@ -86,7 +86,7 @@ class StyleWidgetState extends State<StyleWidget> {
           if (isPdf) ...[
             pdfSettings(),
             const SizedBox(height: 10),
-            fontAndPageTurn(),
+            Row(children: [Expanded(child: pageTurnMethod())]),
           ] else ...[
             sliders(),
             const SizedBox(height: 10),
@@ -117,15 +117,6 @@ class StyleWidgetState extends State<StyleWidget> {
   Widget pdfSettings() {
     return Column(
       children: [
-        Row(
-          children: [
-            IconAndText(
-              icon: const Icon(Icons.picture_as_pdf),
-              text: L10n.of(context).readingPagePdf,
-            ),
-          ],
-        ),
-        const SizedBox(height: 8),
         AnxSegmentedButton<String>(
           segments: [
             SegmentButtonItem(
@@ -139,7 +130,7 @@ class StyleWidgetState extends State<StyleWidget> {
               icon: const Icon(Icons.swap_horiz),
             ),
             SegmentButtonItem(
-              label: L10n.of(context).readingPageOriginalSize,
+              label: L10n.of(context).readingPageOriginal,
               value: 'original-size',
               icon: const Icon(Icons.crop_original),
             ),
@@ -175,13 +166,27 @@ class StyleWidgetState extends State<StyleWidget> {
           children: [
             IconAndText(
               icon: const Icon(Icons.auto_stories),
-              text: L10n.of(context).readingPageSpread,
+              text: L10n.of(context).readingPageColumnCount,
             ),
             Expanded(
-              child: Switch(
-                value: bookStyle.pdfSpread,
-                onChanged: (bool value) =>
-                    updatePdfStyle((style) => style.pdfSpread = value),
+              child: AnxSegmentedButton<bool>(
+                segments: [
+                  SegmentButtonItem(
+                    label: L10n.of(context).readingPageAuto,
+                    value: true,
+                    icon: const Icon(Icons.auto_awesome),
+                  ),
+                  SegmentButtonItem(
+                    label: L10n.of(context).readingPageSingle,
+                    value: false,
+                    icon: const Icon(Icons.book),
+                  ),
+                ],
+                selected: {bookStyle.pdfSpread},
+                onSelectionChanged: (values) {
+                  if (values.isEmpty) return;
+                  updatePdfStyle((style) => style.pdfSpread = values.first);
+                },
               ),
             ),
           ],
@@ -288,6 +293,28 @@ class StyleWidgetState extends State<StyleWidget> {
     return fontList;
   }
 
+  // The page-turn method applies to every format, the font picker only to a
+  // reflowable one.
+  Widget pageTurnMethod() {
+    return DropdownMenu<PageTurn>(
+      label: Text(L10n.of(context).readingPagePageTurningMethod),
+      initialSelection: Prefs().pageTurnStyle,
+      expandedInsets: const EdgeInsets.only(right: 5),
+      inputDecorationTheme: InputDecorationTheme(
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(50)),
+      ),
+      onSelected: (PageTurn? value) {
+        if (value != null) {
+          Prefs().pageTurnStyle = value;
+          epubPlayerKey.currentState!.changePageTurnStyle(value);
+        }
+      },
+      dropdownMenuEntries: PageTurn.values
+          .map((e) => DropdownMenuEntry(value: e, label: e.getLabel(context)))
+          .toList(),
+    );
+  }
+
   Widget fontAndPageTurn() {
     FontModel? font = fonts().firstWhere(
         (element) => element.path == Prefs().font.path,
@@ -304,30 +331,7 @@ class StyleWidgetState extends State<StyleWidget> {
     }
 
     return Row(children: [
-      Expanded(
-        child: DropdownMenu<PageTurn>(
-          label: Text(L10n.of(context).readingPagePageTurningMethod),
-          initialSelection: Prefs().pageTurnStyle,
-          expandedInsets: const EdgeInsets.only(right: 5),
-          inputDecorationTheme: InputDecorationTheme(
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(50),
-            ),
-          ),
-          onSelected: (PageTurn? value) {
-            if (value != null) {
-              Prefs().pageTurnStyle = value;
-              epubPlayerKey.currentState!.changePageTurnStyle(value);
-            }
-          },
-          dropdownMenuEntries: PageTurn.values
-              .map((e) => DropdownMenuEntry(
-                    value: e,
-                    label: e.getLabel(context),
-                  ))
-              .toList(),
-        ),
-      ),
+      Expanded(child: pageTurnMethod()),
       Expanded(
         child: DropdownMenu<FontModel>(
           label: Text(L10n.of(context).font),
