@@ -44,20 +44,14 @@ jobs:
           cache: 'gradle'
           check-latest: true
 
-      - name: Generate test keystore
+      - name: Setup Android signing (pinned CI test key)
         run: |
-          keytool -genkeypair -v \
-            -keystore android/app/keystore.jks \
-            -storetype JKS \
-            -storepass android \
-            -keypass android \
-            -alias testkey \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Test, OU=Test, O=Test, L=Test, ST=Test, C=US"
-
-      - name: Setup Android signing (test key)
-        run: |
-          echo "storeFile=keystore.jks" > android/key.properties
+          # The test keystore is committed (android/app/ci-test.keystore) so that
+          # every CI build signs with the same key. Generating a fresh key per
+          # build made each APK impossible to install over an earlier one
+          # (INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match).
+          ls -la android/app/ci-test.keystore
+          echo "storeFile=ci-test.keystore" > android/key.properties
           echo "storePassword=android" >> android/key.properties
           echo "keyAlias=testkey" >> android/key.properties
           echo "keyPassword=android" >> android/key.properties
