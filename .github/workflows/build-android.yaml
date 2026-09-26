@@ -62,6 +62,10 @@ jobs:
           dart run build_runner build --delete-conflicting-outputs
           flutter build apk --release
           flutter build apk --split-per-abi
+          # A profile build alongside the release one: it shows build-time
+          # exceptions on screen (a release build only paints a grey box), which
+          # is how a failing page gets diagnosed on a device.
+          flutter build apk --profile --split-per-abi
 
       - name: Rename builds
         run: |
