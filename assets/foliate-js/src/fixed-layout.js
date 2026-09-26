@@ -471,6 +471,7 @@ export class FixedLayout extends HTMLElement {
         }
         :host([flow="scrolled"]) {
             display: block;
+            scroll-snap-type: y proximity;
             overflow-y: auto;
             /* auto (not hidden) so a zoomed page wider than the viewport can be
                panned horizontally; collapses to no scrollbar when pages fit. */
@@ -511,6 +512,9 @@ export class FixedLayout extends HTMLElement {
             position: relative;
             flex-shrink: 0;
             overflow: hidden;
+            /* Snap page by page so a swipe lands on a page boundary, the way a
+               reflowable book's paging scroller behaves. */
+            scroll-snap-align: start;
             /* Scale the gap with the zoom so the committed layout matches the
                pinch preview, whose transform scales the whole container (gaps
                included). Without this the gap snaps back to a fixed px on
@@ -519,6 +523,9 @@ export class FixedLayout extends HTMLElement {
         }
         :host([flow="scrolled"]) .scroll-page iframe {
             pointer-events: none;
+        }
+        :host([flow="scrolled"][scroll-direction="horizontal"]) {
+            scroll-snap-type: x proximity;
         }
         :host([flow="scrolled"][scroll-direction="horizontal"]) .scroll-container {
             flex-direction: row;
