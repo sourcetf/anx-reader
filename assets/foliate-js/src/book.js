@@ -1554,6 +1554,22 @@ class Reader {
   }
 
   #onTouchEnd = ({ detail: e }) => {
+    // A fixed-layout page has no scrolling container of its own, so a left/right
+    // swipe is turned into a page turn here, in the app layer (readest does the
+    // same in its reader): the renderer only reports the gesture. A reflowable
+    // book pages by its paginator scrolling under the finger, so it is left alone.
+    if (this.view?.isFixedLayout && !this.#ignoreTouch()) {
+      const { direction, delta } = e.touchState ?? {}
+      const dx = delta?.x ?? 0
+      const SWIPE_TURN_THRESHOLD = 60
+      if (direction === 'horizontal' && Math.abs(dx) > SWIPE_TURN_THRESHOLD
+        && Math.abs(dx) > Math.abs(delta?.y ?? 0)) {
+        const rtl = this.view.book?.dir === 'rtl'
+        if (dx > 0) rtl ? nextPage() : prevPage()
+        else rtl ? prevPage() : nextPage()
+        return
+      }
+    }
     if (this.#ignoreTouch()) {
       if (e.touchState.direction === 'vertical') {
         const renderer = this.view.renderer;

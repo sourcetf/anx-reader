@@ -202,6 +202,23 @@ window.__runDeviceTest = async () => {
         events: seen.map(e => e.join(':')),
         pullUpCalls: window.__calls.filter(c => c.name === 'onPullUp').length - beforePull,
       })
+
+      // a horizontal swipe must turn the page (the app layer translates it)
+      const swipe = async (fromX, toX) => {
+        const indexBefore = view().renderer.index
+        const tap = (type, x, y) => {
+          const t = new Touch({ identifier: 2, target: frame2.doc.documentElement, clientX: x, clientY: y, screenX: x, screenY: y, pageX: x, pageY: y })
+          return new TouchEvent(type, { touches: type === 'touchend' ? [] : [t], changedTouches: [t], bubbles: true, cancelable: true })
+        }
+        frame2.doc.dispatchEvent(tap('touchstart', fromX, 1200))
+        frame2.doc.dispatchEvent(tap('touchmove', (fromX + toX) / 2, 1200))
+        frame2.doc.dispatchEvent(tap('touchmove', toX, 1200))
+        frame2.doc.dispatchEvent(tap('touchend', toX, 1200))
+        await wait(1200)
+        return { before: indexBefore, after: view().renderer.index, cfi: view().lastLocation?.cfi }
+      }
+      report('swipe-left', await swipe(900, 200))
+      report('swipe-right', await swipe(200, 900))
     }
 
     report('done', state())
