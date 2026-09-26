@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:anx_reader/config/shared_preference_provider.dart';
 import 'package:anx_reader/l10n/generated/L10n.dart';
 import 'package:anx_reader/models/book_style.dart';
+import 'package:anx_reader/models/book.dart';
 import 'package:anx_reader/models/font_model.dart';
 import 'package:anx_reader/page/reading_page.dart';
 import 'package:anx_reader/page/settings_page/subpage/fonts.dart';
@@ -11,6 +12,7 @@ import 'package:anx_reader/service/font.dart';
 import 'package:anx_reader/utils/font_parser.dart';
 import 'package:anx_reader/utils/get_path/get_base_path.dart';
 import 'package:anx_reader/widgets/icon_and_text.dart';
+import 'package:anx_reader/widgets/common/anx_segmented_button.dart';
 import 'package:anx_reader/widgets/reading_page/more_settings/more_settings.dart';
 import 'package:anx_reader/widgets/reading_page/widget_title.dart';
 import 'package:anx_reader/dao/theme.dart';
@@ -45,12 +47,14 @@ class StyleWidget extends StatefulWidget {
     required this.epubPlayerKey,
     required this.setCurrentPage,
     required this.hideAppBarAndBottomBar,
+    required this.book,
   });
 
   final List<ReadTheme> themes;
   final GlobalKey<EpubPlayerState> epubPlayerKey;
   final Function setCurrentPage;
   final Function hideAppBarAndBottomBar;
+  final Book book;
 
   @override
   StyleWidgetState createState() => StyleWidgetState();
@@ -60,6 +64,18 @@ class StyleWidgetState extends State<StyleWidget> {
   BookStyle bookStyle = Prefs().bookStyle;
   int? currentThemeId = Prefs().readTheme.id;
 
+  // A PDF page is an image: it has no font, spacing or column settings, only a
+  // scale, a spread layout and the page adjustments below.
+  bool get isPdf => widget.book.fileFullPath.toLowerCase().endsWith('.pdf');
+
+  void updatePdfStyle(void Function(BookStyle style) mutate) {
+    setState(() {
+      mutate(bookStyle);
+      widget.epubPlayerKey.currentState!.changeStyle(bookStyle);
+      Prefs().saveBookStyleToPrefs(bookStyle);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -67,9 +83,15 @@ class StyleWidgetState extends State<StyleWidget> {
       child: Column(
         children: [
           widgetTitle(L10n.of(context).readingPageStyle, ReadingSettings.theme),
-          sliders(),
-          const SizedBox(height: 10),
-          fontAndPageTurn(),
+          if (isPdf) ...[
+            pdfSettings(),
+            const SizedBox(height: 10),
+            fontAndPageTurn(),
+          ] else ...[
+            sliders(),
+            const SizedBox(height: 10),
+            fontAndPageTurn(),
+          ],
           const Divider(),
           Row(
             children: [
@@ -89,6 +111,132 @@ class StyleWidgetState extends State<StyleWidget> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget pdfSettings() {
+    return Column(
+      children: [
+        Row(
+          children: [
+            IconAndText(
+              icon: const Icon(Icons.picture_as_pdf),
+              text: L10n.of(context).readingPagePdf,
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        AnxSegmentedButton<String>(
+          segments: [
+            SegmentButtonItem(
+              label: L10n.of(context).readingPageFitPage,
+              value: 'fit-page',
+              icon: const Icon(Icons.fit_screen),
+            ),
+            SegmentButtonItem(
+              label: L10n.of(context).readingPageFitWidth,
+              value: 'fit-width',
+              icon: const Icon(Icons.swap_horiz),
+            ),
+            SegmentButtonItem(
+              label: L10n.of(context).readingPageOriginalSize,
+              value: 'original-size',
+              icon: const Icon(Icons.crop_original),
+            ),
+          ],
+          selected: {bookStyle.pdfZoomMode},
+          onSelectionChanged: (values) {
+            if (values.isEmpty) return;
+            updatePdfStyle((style) => style.pdfZoomMode = values.first);
+          },
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            IconAndText(
+              icon: const Icon(Icons.zoom_in),
+              text: L10n.of(context).readingPageZoomLevel,
+            ),
+            Expanded(
+              child: Slider(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                value: bookStyle.pdfZoomLevel.toDouble(),
+                min: 50,
+                max: 500,
+                divisions: 45,
+                label: '${bookStyle.pdfZoomLevel}%',
+                onChanged: (double value) =>
+                    updatePdfStyle((style) => style.pdfZoomLevel = value.round()),
+              ),
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            IconAndText(
+              icon: const Icon(Icons.auto_stories),
+              text: L10n.of(context).readingPageSpread,
+            ),
+            Expanded(
+              child: Switch(
+                value: bookStyle.pdfSpread,
+                onChanged: (bool value) =>
+                    updatePdfStyle((style) => style.pdfSpread = value),
+              ),
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            IconAndText(
+              icon: const Icon(Icons.contrast),
+              text: L10n.of(context).readingPageContrast,
+            ),
+            Expanded(
+              child: Slider(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                value: bookStyle.pdfContrast.toDouble(),
+                min: 50,
+                max: 300,
+                divisions: 25,
+                label: '${bookStyle.pdfContrast}%',
+                onChanged: (double value) =>
+                    updatePdfStyle((style) => style.pdfContrast = value.round()),
+              ),
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            IconAndText(
+              icon: const Icon(Icons.swipe),
+              text: L10n.of(context).readingPageLockHorizontalPan,
+            ),
+            Expanded(
+              child: Switch(
+                value: bookStyle.pdfLockPan,
+                onChanged: (bool value) =>
+                    updatePdfStyle((style) => style.pdfLockPan = value),
+              ),
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            IconAndText(
+              icon: const Icon(Icons.palette),
+              text: L10n.of(context).readingPageApplyThemeToPdf,
+            ),
+            Expanded(
+              child: Switch(
+                value: bookStyle.pdfApplyTheme,
+                onChanged: (bool value) =>
+                    updatePdfStyle((style) => style.pdfApplyTheme = value),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 

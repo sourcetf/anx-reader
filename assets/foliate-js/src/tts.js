@@ -28,12 +28,20 @@ const shouldSkipTextNode = node => {
     return isLocalLink(anchor.getAttribute('href'))
 }
 
-const getRangeText = range => {
+const getRangeText = (range, nodeFilter) => {
     const fragment = range.cloneContents()
-    const walker = document.createTreeWalker(fragment, NodeFilter.SHOW_TEXT)
+    const walker = document.createTreeWalker(fragment,
+        NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT)
     let text = ''
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+            // pdf.js emits a <br> for every text-layer line break; without a
+            // separator the words on either side of it would be joined
+            if (node.tagName?.toLowerCase() === 'br') text += ' '
+            continue
+        }
         if (shouldSkipTextNode(node)) continue
+        if (nodeFilter?.(node) === NodeFilter.FILTER_REJECT) continue
         text += node.textContent ?? ''
     }
     return text
@@ -63,8 +71,86 @@ const advancePastQuotes = (text, index) => {
     return end
 }
 
-function* getBlocks(doc) {
-    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
+const NS = { XML: 'http://www.w3.org/XML/1998/namespace', SSML: 'http://www.w3.org/2001/10/synthesis' }
+
+const getLang = el => {
+    const x = el.lang || el?.getAttributeNS?.(NS.XML, 'lang')
+    return x ? x : el.parentElement ? getLang(el.parentElement) : null
+}
+
+// For PDF text layers, split content into sentence-level blocks so TTS
+// reads one sentence at a time instead of the whole page in one block.
+// Text nodes are split at sentence boundaries so that every block range
+// aligns with node edges — this prevents the text walker from including
+// text outside the sentence in word marks.
+function* getPDFSentenceBlocks(doc, textLayer) {
+    const collectNodes = () => {
+        const w = doc.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT)
+        const res = []
+        for (let n = w.nextNode(); n; n = w.nextNode()) res.push(n)
+        return res
+    }
+
+    let nodes = collectNodes()
+    if (!nodes.length) return
+
+    const fullText = nodes.map(n => n.nodeValue).join('')
+    if (!fullText.trim()) return
+
+    // Find sentence boundary positions
+    const lang = getLang(textLayer) || undefined
+    const segmenter = new Intl.Segmenter(lang, { granularity: 'sentence' })
+    const boundaries = new Set()
+    for (const { index } of segmenter.segment(fullText))
+        if (index > 0) boundaries.add(index)
+
+    // Split text nodes at sentence boundaries so ranges align with node edges.
+    // Process in reverse order to preserve earlier character positions.
+    let cum = 0
+    const nodeStarts = nodes.map(n => { const s = cum; cum += n.nodeValue.length; return s })
+
+    for (const pos of [...boundaries].sort((a, b) => b - a)) {
+        for (let i = 0; i < nodes.length; i++) {
+            const start = nodeStarts[i]
+            const end = start + nodes[i].nodeValue.length
+            if (pos > start && pos < end) {
+                nodes[i].splitText(pos - start)
+                break
+            }
+        }
+    }
+
+    // Re-collect nodes after splits and group into sentence blocks
+    nodes = collectNodes()
+    cum = 0
+    let groupStart = 0
+    let blockCount = 0
+
+    for (let i = 0; i < nodes.length; i++) {
+        cum += nodes[i].nodeValue.length
+        const isEnd = i === nodes.length - 1 || boundaries.has(cum)
+        if (isEnd) {
+            const range = doc.createRange()
+            range.setStart(nodes[groupStart], 0)
+            range.setEnd(nodes[i], nodes[i].nodeValue.length)
+            if (!rangeIsEmpty(range)) {
+                blockCount++
+                yield range
+            }
+            groupStart = i + 1
+        }
+    }
+}
+
+function* getBlocks(doc, nodeFilter) {
+    const root = doc.body ?? doc.querySelector('body') ?? doc.documentElement
+    // For PDF text layers, yield sentence-level blocks (never annotationLayer text)
+    const textLayer = root.querySelector?.('.textLayer')
+    if (textLayer) {
+        yield* getPDFSentenceBlocks(doc, textLayer)
+        return
+    }
+    const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT)
     let startNode = null
     let startOffset = 0
     let currentBlock = null
@@ -90,6 +176,11 @@ function* getBlocks(doc) {
         if (shouldSkipTextNode(node)) continue
 
         const block = findBlockAncestor(node)
+
+        // A block the caller's filter rejects (an annotationLayer, a footnote
+        // aside) must not be read: drop its text nodes so the range of the
+        // surrounding blocks ends before it instead of swallowing it
+        if (nodeFilter?.(block) === NodeFilter.FILTER_REJECT) continue
 
         if (!startNode) {
             startNode = node
@@ -136,6 +227,18 @@ function* getBlocks(doc) {
 
     const remaining = flushRange()
     if (remaining) yield remaining
+}
+
+// Enumerate every TTS segment of the document in order without touching any
+// TTS instance state. blockIndex/markName match what a TTS instance produces
+// for the same granularity, so callers (e.g. a playback timeline) can
+// correlate the enumeration with live marks and use each range with from().
+export function* getSentences(doc, nodeFilter) {
+    let blockIndex = 0
+    for (const range of getBlocks(doc, nodeFilter)) {
+        yield { blockIndex, markName: String(blockIndex), range }
+        blockIndex++
+    }
 }
 
 class ListIterator {
@@ -239,14 +342,21 @@ class ListIterator {
 
 export class TTS {
     #list
+    #ranges = new Map()
     #lastMark
     #getCfi
-    constructor(doc, textWalker, highlight, getCfi) {
+    constructor(doc, textWalker, nodeFilter, highlight, granularity, getCfi) {
         this.doc = doc
         this.highlight = highlight
         this.#getCfi = getCfi
-        this.#list = new ListIterator(getBlocks(doc), range => {
-            return [getRangeText(range), range]
+        // ANX builds its segments out of `getBlocks`, which already splits at
+        // sentence boundaries, so `granularity` is only accepted for signature
+        // compatibility with readest's TTS.
+        let mark = 0
+        this.#list = new ListIterator(getBlocks(doc, nodeFilter), range => {
+            const name = String(mark++)
+            this.#ranges.set(name, range)
+            return [getRangeText(range, nodeFilter), range, name]
         })
     }
 
@@ -272,8 +382,9 @@ export class TTS {
 
     #resultFrom(entry, { highlight = false } = {}) {
         if (!entry) return null
-        const [text, range] = entry
+        const [text, range, mark] = entry
         if (!text || !range) return null
+        if (mark) this.#lastMark = mark
         const plainText = this.#getText(text)
         let cfi = null
         if (highlight && this.highlight && range.cloneRange) {
@@ -331,6 +442,22 @@ export class TTS {
             range.compareBoundaryPoints(Range.END_TO_START, range_) <= 0)
         if (entry?.[1]) this.highlight(entry[1].cloneRange())
         return this.#resultFrom(entry)?.text
+    }
+
+    getLastRange() {
+        if (this.#lastMark) {
+            const range = this.#ranges.get(this.#lastMark)
+            if (range) return range.cloneRange()
+        }
+    }
+
+    setMark(mark) {
+        const range = this.#ranges.get(mark)
+        if (range) {
+            this.#lastMark = mark
+            this.highlight(range.cloneRange())
+            return range
+        }
     }
 
     currentDetail() {
