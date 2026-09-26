@@ -181,6 +181,29 @@ window.__runDeviceTest = async () => {
     window.addBookmarkHere(); await wait(500)
     const bookmark = window.__calls.filter(c => c.name === 'handleBookmark').at(-1)
     report('bookmark', { cfi: bookmark && bookmark.data.detail.cfi, content: bookmark && bookmark.data.detail.content })
+
+    // 7. gestures: a touch inside a page iframe must reach the reader's handlers
+    const frame2 = view().renderer.getContents().find(c => c.doc && c.doc.querySelector('.textLayer'))
+    if (frame2) {
+      const makeTouch = (type, x, y) => {
+        const touch = new Touch({ identifier: 1, target: frame2.doc.documentElement, clientX: x, clientY: y, screenX: x, screenY: y, pageX: x, pageY: y })
+        return new TouchEvent(type, { touches: type === 'touchend' ? [] : [touch], changedTouches: [touch], bubbles: true, cancelable: true })
+      }
+      const host = view().renderer
+      const seen = []
+      for (const n of ['doctouchstart', 'doctouchmove', 'doctouchend']) host.addEventListener(n, e => seen.push([n, e.detail.touchState.direction, e.detail.touchState.delta.y]))
+      const beforePull = window.__calls.filter(c => c.name === 'onPullUp').length
+      frame2.doc.dispatchEvent(makeTouch('touchstart', 200, 1400))
+      frame2.doc.dispatchEvent(makeTouch('touchmove', 200, 1200))
+      frame2.doc.dispatchEvent(makeTouch('touchmove', 200, 700))
+      frame2.doc.dispatchEvent(makeTouch('touchend', 200, 700))
+      await wait(600)
+      report('gestures', {
+        events: seen.map(e => e.join(':')),
+        pullUpCalls: window.__calls.filter(c => c.name === 'onPullUp').length - beforePull,
+      })
+    }
+
     report('done', state())
   } catch (e) {
     report('failure', String(e && e.stack ? e.stack.split(String.fromCharCode(10)).slice(0, 3).join(' | ') : e))
