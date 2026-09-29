@@ -196,6 +196,15 @@ class _MyAppState extends ConsumerState<MyApp>
             ],
             builder: FlutterSmartDialog.init(),
             navigatorKey: navigatorKey,
+            // Android hands every file:// or content:// "view this file" intent to
+            // the app as a route, and none of them is a route of ours; without a
+            // fallback the framework throws on the resulting null route instead of
+            // leaving the user on the home page. The file itself arrives through
+            // the share channel, not here.
+            onUnknownRoute: (settings) => MaterialPageRoute(
+              settings: settings,
+              builder: (_) => _home(),
+            ),
             locale: prefsNotifier.locale,
             localeListResolutionCallback: _resolveLocale,
             localizationsDelegates: L10n.localizationsDelegates,
@@ -204,15 +213,16 @@ class _MyAppState extends ConsumerState<MyApp>
             themeMode: prefsNotifier.themeMode,
             theme: colorSchema(prefsNotifier, context, Brightness.light),
             darkTheme: colorSchema(prefsNotifier, context, Brightness.dark),
-            home: _needsMigration
-                ? _MigrationWrapper(
-                    migrationCheckResult: _migrationCheckResult!)
-                : const HomePage(),
+            home: _home(),
           );
         },
       ),
     );
   }
+
+  Widget _home() => _needsMigration && _migrationCheckResult != null
+      ? _MigrationWrapper(migrationCheckResult: _migrationCheckResult!)
+      : const HomePage();
 
   Locale _resolveLocale(
     List<Locale>? preferredLocales,

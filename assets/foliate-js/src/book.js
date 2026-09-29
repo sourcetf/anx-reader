@@ -1716,9 +1716,11 @@ class Reader {
         id: item.id,
         level,
         // A PDF outline entry carries the page it points at, so it needs no
-        // fraction arithmetic to place.
+        // fraction arithmetic to place. The fraction is that page's own share of
+        // the book — the same figure the footer shows for it — so a row read
+        // against the footer agrees with it.
         startPercentage: this.view.isFixedLayout && Number.isInteger(item.index)
-          ? item.index / (this.view.book?.sections?.length || 1)
+          ? (item.index + 1) / (this.view.book?.sections?.length || 1)
           : getFractionByHref(item.href),
         startPage: this.view.isFixedLayout && Number.isInteger(item.index)
           ? item.index + 1

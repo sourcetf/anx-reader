@@ -20,6 +20,7 @@ const PORT = Number(process.argv[2] ?? 8085)
 const BASE = `http://127.0.0.1:${PORT}`
 const FIXTURES = process.env.ANX_PDF_FIXTURES ?? join(here, 'fixtures')
 const PDF = join(FIXTURES, 'sample-alice.pdf')
+const OUTLINE_PDF = join(FIXTURES, 'sample-alice-outline.pdf')
 const SHOTS = join(here, 'shots')
 mkdirSync(SHOTS, { recursive: true })
 
@@ -403,7 +404,34 @@ const run = async () => {
     `the page comes out dark (${JSON.stringify(theme.pixel)})`)
 
   // -------------------------------------------------------------------------
-  console.log('\n[12] the page reported no errors')
+  console.log('\n[12] the TOC places every outline entry on the page it points at')
+  const tocPage = await context.newPage()
+  tocPage.on('pageerror', e => errors.push(`toc: ${String(e)}`))
+  await tocPage.goto(readerUrl({ file: OUTLINE_PDF }))
+  await tocPage.waitForFunction(() => window.reader?.view?.isFixedLayout === true, { timeout: 60000 })
+  await tocPage.waitForFunction(() => (window.reader?.toc ?? []).length > 0, { timeout: 60000 })
+  const toc = await tocPage.evaluate(() => {
+    const sections = window.reader.view.book?.sections?.length ?? 0
+    const flat = []
+    const walk = items => (items ?? []).forEach(i => { flat.push(i); walk(i.subitems) })
+    walk(window.reader.toc)
+    const mismatched = flat.filter(i =>
+      Math.abs(i.startPercentage * sections - i.startPage) > 0.001)
+    return {
+      sections,
+      count: flat.length,
+      first: flat[0] && { label: flat[0].label, page: flat[0].startPage, pct: flat[0].startPercentage },
+      mismatched: mismatched.slice(0, 3).map(i => ({ label: i.label, page: i.startPage, pct: i.startPercentage })),
+    }
+  })
+  ok(toc.count > 0, `the outline reached the app (${toc.count} entries)`)
+  ok(toc.mismatched.length === 0,
+    `every entry's percentage is its own page's share of the book (first: ${JSON.stringify(toc.first)})`,
+    JSON.stringify(toc.mismatched))
+  await tocPage.close()
+
+  // -------------------------------------------------------------------------
+  console.log('\n[13] the page reported no errors')
   const realErrors = errors.filter(e => !/favicon|Download the React/i.test(e))
   ok(realErrors.length === 0, 'no console/page errors', realErrors.slice(0, 3).join(' | '))
 
