@@ -53,6 +53,13 @@
             <meta-data
                 android:name="flutterEmbedding"
                 android:value="2" />
+            <!-- Files arrive through the app's own share/view intent handling; the
+                 framework must not turn each intent's URI into a route, because
+                 the app has no such routes and the resulting unknown-route push
+                 stacks a second home page under the import dialog. -->
+            <meta-data
+                android:name="flutter_deeplinking_enabled"
+                android:value="false" />
 
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

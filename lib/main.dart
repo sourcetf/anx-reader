@@ -196,11 +196,9 @@ class _MyAppState extends ConsumerState<MyApp>
             ],
             builder: FlutterSmartDialog.init(),
             navigatorKey: navigatorKey,
-            // Android hands every file:// or content:// "view this file" intent to
-            // the app as a route, and none of them is a route of ours; without a
-            // fallback the framework throws on the resulting null route instead of
-            // leaving the user on the home page. The file itself arrives through
-            // the share channel, not here.
+            // Last resort for a route name this app does not know (the manifest
+            // also keeps intents from becoming routes): the framework throws on a
+            // null fallback rather than staying put, so hand back the home page.
             onUnknownRoute: (settings) => MaterialPageRoute(
               settings: settings,
               builder: (_) => _home(),
