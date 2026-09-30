@@ -327,6 +327,10 @@ export class TTS {
 
     from(range) {
         this.#lastMark = null
+        // A fixed-layout page carries no DOM range, so the reader hands one over
+        // as null: start from where the walker stands (or its first entry)
+        // instead of failing on the comparison below.
+        if (!range) return this.resume()
         const entry = this.#list.find(range_ =>
             range.compareBoundaryPoints(Range.END_TO_START, range_) <= 0)
         if (entry?.[1]) this.highlight(entry[1].cloneRange())

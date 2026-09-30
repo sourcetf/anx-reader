@@ -341,6 +341,19 @@ const run = async () => {
     `TTS returns a sentence from the page (“${String(tts.first).slice(0, 50)}”)`)
   ok(tts.detail?.cfi?.startsWith('epubcfi'), `each sentence carries a CFI (${tts.detail?.cfi})`)
 
+  // The narrate button asks for the range at the current position, and a page in
+  // a fixed-layout book has none — it must still start rather than throw.
+  const ttsHere = await page.evaluate(() => {
+    window.initTts()
+    const first = window.ttsHere()
+    return typeof first === 'string' ? first : JSON.stringify(first)
+  })
+  ok(typeof ttsHere === 'string' && ttsHere.length > 5,
+    `the narrate entry point returns a sentence (“${String(ttsHere).slice(0, 50)}”)`)
+  const rangeErrors = errors.filter(e => /compareBoundaryPoints/.test(e))
+  ok(rangeErrors.length === 0, 'and does not throw on a page with no range',
+    rangeErrors.slice(0, 2).join(' | '))
+
   // -------------------------------------------------------------------------
   console.log('\n[9] bookmarks no longer crash a fixed-layout page')
   await page.evaluate(() => window.addBookmarkHere())

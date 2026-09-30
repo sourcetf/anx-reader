@@ -54,4 +54,13 @@ class SystemTtsProvider extends TtsServiceProvider {
   @override
   String getLabel(BuildContext context) =>
       L10n.of(context).settingsNarrateSystemTts;
+
+  /// The platform falls back to its own default voice, so having none selected
+  /// is not the error here that it is for the online services, which need a
+  /// voice name; throwing used to abort the first narration on a fresh install.
+  @override
+  String resolveVoice(String? voiceOverride) {
+    if (voiceOverride != null && voiceOverride.isNotEmpty) return voiceOverride;
+    return getSelectedVoice();
+  }
 }
