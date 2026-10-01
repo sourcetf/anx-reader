@@ -14,6 +14,7 @@ import 'package:anx_reader/providers/sync_status.dart';
 import 'package:anx_reader/service/convert_to_epub/txt/convert_from_txt.dart';
 import 'package:anx_reader/service/md5_service.dart';
 import 'package:anx_reader/service/book.dart';
+import 'package:anx_reader/service/ocr/ocr_store.dart';
 import 'package:anx_reader/utils/get_path/get_base_path.dart';
 import 'package:anx_reader/utils/share_file.dart';
 import 'package:anx_reader/utils/toast/common.dart';
@@ -57,6 +58,8 @@ class BookBottomSheet extends ConsumerWidget {
       ref.read(bookListProvider.notifier).refresh();
       File(book.fileFullPath).delete();
       File(book.coverFullPath).delete();
+      // The words OCR read on this book's pages go with it.
+      OcrStore.forget(book.id);
     }
 
     void handleDetail(BuildContext context) {

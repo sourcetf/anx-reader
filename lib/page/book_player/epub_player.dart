@@ -29,6 +29,7 @@ import 'package:anx_reader/providers/chapter_content_bridge.dart';
 import 'package:anx_reader/providers/current_reading.dart';
 import 'package:anx_reader/service/book_player/book_player_server.dart';
 import 'package:anx_reader/service/ocr/ocr_service.dart';
+import 'package:anx_reader/service/ocr/ocr_store.dart';
 import 'package:anx_reader/providers/toc_search.dart';
 import 'package:anx_reader/service/tts/base_tts.dart';
 import 'package:anx_reader/service/tts/models/tts_sentence.dart';
@@ -734,6 +735,29 @@ class EpubPlayerState extends ConsumerState<EpubPlayer>
         AnxLog.info('OCR found no text on page '
             '${payload is Map ? payload['page'] : '?'}: $reason');
         AnxToast.show(L10n.of(context).ocrNoTextFound);
+      },
+    );
+    // A recognised page is worth keeping: the words go next to the book so the
+    // page still has its text — and its highlights — when it is opened again.
+    controller.addJavaScriptHandler(
+      handlerName: 'ocrSave',
+      callback: (args) async {
+        final payload = args.isNotEmpty ? args.first : null;
+        if (payload is! Map) return null;
+        final page = int.tryParse('${payload['page']}');
+        final words = payload['words'];
+        if (page == null || words is! List) return null;
+        await OcrStore.savePage(widget.book.id, page, words);
+        return null;
+      },
+    );
+    controller.addJavaScriptHandler(
+      handlerName: 'ocrCached',
+      callback: (args) async {
+        final payload = args.isNotEmpty ? args.first : null;
+        final page = payload is Map ? int.tryParse('${payload['page']}') : null;
+        if (page == null) return {'words': null};
+        return {'words': await OcrStore.loadPage(widget.book.id, page)};
       },
     );
     controller.addJavaScriptHandler(

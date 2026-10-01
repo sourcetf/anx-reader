@@ -6,6 +6,10 @@ import { FootnoteHandler } from './footnotes.js'
 import { Overlayer } from './overlayer.js'
 import { getSelectionText, getPdfTextLayer } from './pdf-text.js'
 import { collapse, compare, fromRange, toRange } from './epubcfi.js'
+import {
+  ocrPage, restoreOcrWords, pageHasOwnText, injectOcrTextLayer,
+  pageTextLayer, OCR_HOLD_MS, OCR_DRIFT_PX,
+} from './ocr-layer.js'
 const { configure, ZipReader, BlobReader, TextWriter, BlobWriter } =
   await import('./vendor/zip.js')
 const { EPUB } = await import('./epub.js')
@@ -1219,6 +1223,17 @@ class Reader {
     })
   }
 
+  // Redraw what was already drawn on a page once its text came back: an
+  // annotation added while the page had no text layer was dropped by the view.
+  #redrawAnnotations(index) {
+    const list = this.annotations.get(index)
+    if (!list?.length) return
+    for (const annotation of list) {
+      if (annotation.type === 'bookmark') continue
+      this.view.addAnnotation(annotation)
+    }
+  }
+
   renderAnnotation(annotations) {
     const annos = annotations ?? allAnnotations ?? []
     for (const anno of annos) {
@@ -1355,7 +1370,19 @@ class Reader {
     this.#doc = doc
     this.#index = index
     setSelectionHandler(this.view, doc, index)
-    if (this.view.isFixedLayout) applyFixedLayoutDocStyles(doc)
+    if (this.view.isFixedLayout) {
+      applyFixedLayoutDocStyles(doc)
+      // A scanned page has no text of its own; if it was recognised before, its
+      // words come back with it, and whatever was drawn on them — a highlight is
+      // anchored to a range in that text — is drawn again once they are there.
+      // The page's own renderer restores them too (it is what clears the layer
+      // on a zoom), so the restore is idempotent and cheap: the words are in
+      // memory by then.
+      doc.addEventListener('anx-ocr-restored', () => this.#redrawAnnotations(index))
+      restoreOcrWords(doc, index).then(restored => {
+        if (restored) this.#redrawAnnotations(index)
+      })
+    }
 
     // if (!this.#originalContent) {
     // console.log('Saving original content', doc);
@@ -1557,10 +1584,14 @@ class Reader {
       })
     }
     const doc = hit?.doc
-    if (!doc || hasSelectableText(doc)) return
-    const words = await ocrPage(hit.index)
-    if (!words || !injectOcrTextLayer(doc, words)) return
+    if (!doc || pageHasOwnText(doc)) return
     const canvas = doc.querySelector('#canvas > canvas')
+    if (!canvas) return
+    const words = await ocrPage(hit.index, {
+      canvas,
+      language: this.view?.book?.metadata?.language,
+    })
+    if (!words || !injectOcrTextLayer(doc, words)) return
     const box = canvas.getBoundingClientRect()
     if (!box.width || !box.height) return
     const nx = (x - box.left) / box.width
@@ -1572,7 +1603,17 @@ class Reader {
     const span = pageTextLayer(doc)?.querySelector(`[data-ocr-word="${index}"]`)
     if (!span) return
     const range = doc.createRange()
-    range.selectNodeContents(span)
+    // Select the word's text rather than its element: a range that ends on
+    // element boundaries becomes an element CFI, which resolves back to a
+    // collapsed range — a highlight made from it would be drawn with no size at
+    // all when the page is shown again.
+    const text = span.firstChild
+    if (text) {
+      range.setStart(text, 0)
+      range.setEnd(text, text.data.length)
+    } else {
+      range.selectNodeContents(span)
+    }
     const selection = doc.defaultView.getSelection()
     selection.removeAllRanges()
     selection.addRange(range)
@@ -1907,90 +1948,6 @@ const ensurePageColorsFilter = (doc, pageColors) => {
   host.append(svg)
   ;(doc.body ?? doc.documentElement).append(host)
   return PAGE_COLORS_FILTER
-}
-
-// --- OCR for pages that carry no text of their own (scanned PDFs) -----------
-// A scanned page is a bitmap with nothing to select, so a long press runs the
-// page through OCR and the words come back as the page's text layer. From there
-// the reader's ordinary paths apply: the press selects a word, the context menu
-// opens, highlights and search work exactly as on a text page.
-const OCR_HOLD_MS = 450
-const OCR_DRIFT_PX = 14
-const ocrWordsByPage = new Map()
-
-const pageTextLayer = doc => doc?.querySelector('.textLayer') ?? null
-
-const hasSelectableText = (doc) => {
-    const layer = pageTextLayer(doc)
-    return !!layer && !!layer.textContent?.trim()
-}
-
-const injectOcrTextLayer = (doc, words) => {
-    const layer = pageTextLayer(doc)
-    const canvas = doc.querySelector('#canvas > canvas')
-    if (!layer || !canvas) return false
-    // The normalised boxes are placed against the canvas's own CSS box, which is
-    // the same space the text layer covers at any zoom.
-    const width = canvas.clientWidth || canvas.width
-    const height = canvas.clientHeight || canvas.height
-    if (!width || !height) return false
-    layer.replaceChildren()
-    words.forEach((word, i) => {
-        const span = doc.createElement('span')
-        span.textContent = word.text
-        span.dataset.ocrWord = String(i)
-        const w = word.w * width
-        const h = word.h * height
-        Object.assign(span.style, {
-            position: 'absolute',
-            left: `${word.x * width}px`,
-            top: `${word.y * height}px`,
-            width: `${w}px`,
-            height: `${h}px`,
-            fontSize: `${Math.max(h, 1)}px`,
-            lineHeight: `${h}px`,
-            whiteSpace: 'pre',
-            color: 'transparent',
-            transformOrigin: '0 0',
-        })
-        layer.append(span)
-    })
-    return layer.childElementCount > 0
-}
-
-const ocrPage = async (index) => {
-    if (ocrWordsByPage.has(index)) return ocrWordsByPage.get(index)
-    const content = (reader.view?.renderer?.getContents?.() ?? [])
-        .find(c => c.index === index)
-    const doc = content?.doc
-    const canvas = doc?.querySelector('#canvas > canvas')
-    if (!canvas) return null
-    let answer
-    try {
-        answer = await window.flutter_inappwebview.callHandler('ocrPage', {
-            image: canvas.toDataURL('image/png'),
-            page: index,
-            language: reader.view?.book?.metadata?.language ?? '',
-        })
-    } catch (e) {
-        console.warn('OCR request failed', e)
-        return null
-    }
-    if (!answer?.ok || !answer.words?.length) {
-        callFlutter('ocrUnavailable', { page: index, reason: answer?.reason ?? '' })
-        return null
-    }
-    // ML Kit answers in bitmap pixels; the page needs them as a fraction of the
-    // page, which is what survives a re-render at another zoom.
-    const words = answer.words.map(w => ({
-        text: String(w.text ?? ''),
-        x: w.x / canvas.width,
-        y: w.y / canvas.height,
-        w: w.w / canvas.width,
-        h: w.h / canvas.height,
-    })).filter(w => w.text)
-    ocrWordsByPage.set(index, words)
-    return words
 }
 
 // Fixed-layout pages live in their own iframe documents, where the reader's

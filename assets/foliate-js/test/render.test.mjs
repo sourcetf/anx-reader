@@ -174,6 +174,8 @@ const { makePDF } = await (async () => {
   mkdirSync(dir, { recursive: true })
   const target = join(dir, 'pdf.mjs')
   writeFileSync(target, readFileSync(join(SRC, 'pdf.js')))
+  // pdf.js imports the OCR layer helpers, which have to be there as well.
+  writeFileSync(join(dir, 'ocr-layer.js'), readFileSync(join(SRC, 'ocr-layer.js')))
   return await import(pathToFileURL(target).href)
 })()
 

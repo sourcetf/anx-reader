@@ -456,6 +456,7 @@ const run = async () => {
   scanPage.on('console', m => {
     if (m.type() === 'error') errors.push(`ocr console: ${m.text()}`)
   })
+  await scanPage.bringToFront()
   await scanPage.addInitScript(() => {
     window.__ocrRequests = 0
     window.__ocrAnswer = { ok: false, reason: 'stub' }
@@ -576,6 +577,16 @@ const run = async () => {
     'the payload says it is a highlightable fixed-layout selection')
   await scanPage.screenshot({ path: join(SHOTS, '13-ocr-selection.png') })
 
+  // The words are handed to the app so the page keeps its text across sessions:
+  // the boxes arrived as bitmap pixels, so what is saved is their fraction of
+  // the page, which survives a re-render at another zoom.
+  const saved = await lastCall(scanPage, 'ocrSave')
+  ok(saved?.page === 0 && saved?.words?.length === words.length,
+    `the words are handed to the app (${saved?.words?.length} of them)`)
+  ok(saved?.words?.every(w => w.x >= 0 && w.x <= 1 && w.y >= 0 && w.y <= 1 && w.w > 0 && w.w <= 1),
+    'as fractions of the page, not bitmap pixels')
+  ok(saved?.words?.[0]?.text === words[0].text, `carrying the text (“${saved?.words?.[0]?.text}”)`)
+
   // A zoom re-renders the page and clears the text layer with the bitmap. The
   // words are kept per page, so the next press rebuilds the layer without asking
   // the app again — and, since the boxes are fractions of the page, the same word
@@ -588,31 +599,32 @@ const run = async () => {
   const afterZoom = await scanPage.evaluate(() => {
     const doc = window.reader.view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas')).doc
     const canvas = doc.querySelector('#canvas > canvas')
+    const spans = Array.from(doc.querySelectorAll('.textLayer span[data-ocr-word]'))
     return {
       canvasWidth: canvas.width,
-      spans: doc.querySelectorAll('.textLayer span[data-ocr-word]').length,
+      spans: spans.length,
+      width: spans[0]?.getBoundingClientRect?.().width ?? 0,
     }
   })
   ok(afterZoom.canvasWidth > scanned.box.w, `the zoom re-rasterised the bitmap (${afterZoom.canvasWidth}px)`)
-  ok(afterZoom.spans === 0, 'which clears the words with the page')
+  ok(afterZoom.spans === words.length,
+    `and the page is re-rendered with its words (${afterZoom.spans} spans)`)
+  ok(afterZoom.width > ocr.firstBox.width,
+    `laid out for the new page size (${ocr.firstBox.width.toFixed(1)} → ${afterZoom.width.toFixed(1)}px)`)
 
   await pressAt(0.25, 0.20)
   await scanPage.waitForTimeout(1500)
   const rebuilt = await scanPage.evaluate(() => {
     const doc = window.reader.view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas')).doc
-    const spans = Array.from(doc.querySelectorAll('.textLayer span[data-ocr-word]'))
     return {
       requests: window.__ocrRequests,
-      spans: spans.length,
-      width: spans[0]?.getBoundingClientRect?.().width ?? 0,
+      spans: doc.querySelectorAll('.textLayer span[data-ocr-word]').length,
       selected: doc.getSelection()?.toString?.() ?? '',
     }
   })
   const zoomPayload = await lastCall(scanPage, 'onSelectionEnd')
   ok(rebuilt.requests === 1, `the words are remembered, not recognised twice (${rebuilt.requests} request)`)
-  ok(rebuilt.spans === words.length, `the press puts them back (${rebuilt.spans} spans)`)
-  ok(rebuilt.width > ocr.firstBox.width,
-    `laid out for the new page size (${ocr.firstBox.width.toFixed(1)} → ${rebuilt.width.toFixed(1)}px)`)
+  ok(rebuilt.spans === words.length, `they are still there for the press (${rebuilt.spans} spans)`)
   ok(rebuilt.selected === words[0].text, `the same word is under the same point (“${rebuilt.selected}”)`)
   ok(!!zoomPayload?.cfi && zoomPayload.cfi === ocrPayload.cfi,
     `and its CFI does not move with the zoom (${String(zoomPayload?.cfi).slice(0, 40)})`)
@@ -636,7 +648,84 @@ const run = async () => {
   await scanPage.close()
 
   // -------------------------------------------------------------------------
-  console.log('\n[14] the page reported no errors')
+  console.log('\n[14] a recognised page keeps its words for the next session')
+  // A second reader session — a fresh page, so nothing is in memory — answers
+  // `ocrCached` with what the first one saved, the way the app does from its
+  // per-book store. The page must come back with its text, and a highlight made
+  // on a recognised word must draw itself without anyone pressing first.
+  const reopenPage = await context.newPage()
+  reopenPage.on('pageerror', e => errors.push(`reopen: ${String(e)}`))
+  await reopenPage.bringToFront()
+  await reopenPage.addInitScript((stored) => {
+    window.__ocrRequests = 0
+    const original = window.flutter_inappwebview.callHandler
+    window.flutter_inappwebview.callHandler = (name, data) => {
+      if (name === 'ocrPage') window.__ocrRequests++
+      if (name === 'ocrCached') return Promise.resolve({ words: stored[data?.page] ?? null })
+      if (name === 'ocrSave') { stored[data?.page] = data?.words; return Promise.resolve(null) }
+      return original(name, data)
+    }
+  }, { 0: saved?.words ?? [] })
+  await reopenPage.goto(readerUrl({ file: SCAN_PDF }))
+  await reopenPage.waitForFunction(() => window.reader?.view?.isFixedLayout === true, { timeout: 60000 })
+  await reopenPage.waitForFunction(() => {
+    const doc = window.reader?.view?.renderer?.getContents?.()
+      .find(c => c.doc?.querySelector('#canvas > canvas'))?.doc
+    return doc?.querySelectorAll('.textLayer span[data-ocr-word]').length > 0
+  }, { timeout: 60000 }).catch(() => {})
+
+  const reopened = await reopenPage.evaluate(() => {
+    const doc = window.reader.view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas')).doc
+    const spans = Array.from(doc.querySelectorAll('.textLayer span[data-ocr-word]'))
+    const frame = doc.defaultView.frameElement.getBoundingClientRect()
+    const span = spans[0]?.getBoundingClientRect?.() ?? null
+    return {
+      requests: window.__ocrRequests,
+      spans: spans.length,
+      first: spans[0]?.textContent ?? null,
+      width: span?.width ?? 0,
+      onScreen: span ? { x: frame.left + span.left, y: frame.top + span.top } : null,
+    }
+  })
+  ok(reopened.requests === 0,
+    `the words came from the app, not another OCR run (${reopened.requests} requests)`)
+  ok(reopened.spans === words.length, `the page opens with its text back (${reopened.spans} spans)`)
+  ok(reopened.first === words[0].text, `the same words (“${reopened.first}”)`)
+  ok(Math.abs(reopened.width - ocr.firstBox.width) < 2,
+    `in the same place (${ocr.firstBox.width.toFixed(1)} → ${reopened.width.toFixed(1)}px)`)
+  await reopenPage.screenshot({ path: join(SHOTS, '14-ocr-restored.png') })
+
+  // The annotation is added before the restore can have landed (the words come
+  // back over the bridge), so this is the ordering the reader actually hits.
+  const annotated = await reopenPage.evaluate(async (cfi) => {
+    const view = window.reader.view
+    // What the app does on a page it re-opens: hand the highlight over as soon
+    // as the page is there, which can be before the words have come back.
+    window.addAnnotation({ value: cfi, type: 'highlight', color: '#ffcc00' })
+    await new Promise(resolve => setTimeout(resolve, 2500))
+    const contents = view.renderer.getContents()
+    const shape = contents.map(c => c.overlayer?.element?.querySelector('g[fill]')).find(Boolean)
+    const box = shape?.getBoundingClientRect?.() ?? null
+    return {
+      drawn: !!shape,
+      w: box?.width ?? 0,
+      h: box?.height ?? 0,
+      contents: contents.map(c => ({
+        index: c.index,
+        overlayer: !!c.overlayer,
+        groups: c.overlayer?.element?.querySelectorAll('g').length ?? 0,
+      })),
+      annotations: window.reader.annotations?.size ?? null,
+    }
+  }, ocrPayload?.cfi)
+  ok(annotated.drawn && annotated.w > 0 && annotated.h > 0,
+    `a highlight on a recognised word draws after the restore (${annotated.w.toFixed(0)}×${annotated.h.toFixed(0)}px)`,
+    JSON.stringify(annotated))
+  await reopenPage.screenshot({ path: join(SHOTS, '14-ocr-highlight.png') })
+  await reopenPage.close()
+
+  // -------------------------------------------------------------------------
+  console.log('\n[15] the page reported no errors')
   const realErrors = errors.filter(e => !/favicon|Download the React/i.test(e))
   ok(realErrors.length === 0, 'no console/page errors', realErrors.slice(0, 3).join(' | '))
 

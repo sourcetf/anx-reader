@@ -1,4 +1,5 @@
 /* global pdfjsLib */
+import { restoreOcrWords } from './ocr-layer.js'
 
 // https://github.com/mozilla/pdf.js/blob/f04967017f22e46d70d11468dd928b4cdc2f6ea1/web/text_layer_builder.css
 const textLayerBuilderCSS = `
@@ -1023,6 +1024,11 @@ const render = async (page, doc, zoom) => {
     const endOfContent = document.createElement('div')
     endOfContent.className = 'endOfContent'
     container.append(doc.adoptNode(endOfContent))
+
+    // A scanned page has no text for pdf.js to lay out, and the rebuild above
+    // cleared whatever OCR had put there, so the words are put back now — this
+    // is the page's own renderer, and it runs on every zoom.
+    restoreOcrWords(doc)
 
     // Set up panning/selection event handlers once per document
     setupPanningEvents(doc)
