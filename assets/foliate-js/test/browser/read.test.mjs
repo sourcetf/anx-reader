@@ -497,9 +497,15 @@ const run = async () => {
   // Two words, as fractions of the page: what an OCR engine reports is bitmap
   // pixels, so the stub converts them against the live canvas the way ML Kit's
   // answer would arrive.
+  // The third word is set in Unicode 17's CJK Unified Ideographs Extension J
+  // (U+323B0..U+3347F): astral, so each ideograph is a surrogate pair, and no
+  // engine on older Unicode tables knows it is Han.
+  const ASTRAL_WORD = String.fromCodePoint(0x323B0, 0x323B1)
   const words = [
     { text: 'Alice', x: 0.12, y: 0.18, w: 0.30, h: 0.05 },
     { text: 'rabbit', x: 0.12, y: 0.42, w: 0.36, h: 0.05 },
+    { text: ASTRAL_WORD, x: 0.12, y: 0.60, w: 0.30, h: 0.05 },
+    { text: '汉字', x: 0.12, y: 0.70, w: 0.30, h: 0.05 },
   ]
   const answerWith = (list) => scanPage.evaluate((words) => {
     const doc = window.reader.view.renderer.getContents()
@@ -580,6 +586,51 @@ const run = async () => {
   // The words are handed to the app so the page keeps its text across sessions:
   // the boxes arrived as bitmap pixels, so what is saved is their fraction of
   // the page, which survives a re-render at another zoom.
+  // A word made of astral characters has to survive the whole path: the layer,
+  // the selection, the CFI and the payload the app stores.
+  await pressAt(0.27, 0.625)
+  await scanPage.waitForTimeout(1500)
+  const astral = await scanPage.evaluate(() => {
+    const doc = window.reader.view.renderer.getContents()
+      .find(c => c.doc?.querySelector('#canvas > canvas')).doc
+    const span = doc.querySelector('.textLayer span[data-ocr-word="2"]')
+    return {
+      text: span?.textContent ?? null,
+      units: span?.textContent?.length ?? 0,
+      selected: doc.getSelection()?.toString?.() ?? '',
+    }
+  })
+  const astralPayload = await lastCall(scanPage, 'onSelectionEnd')
+  ok(astral.text === ASTRAL_WORD,
+    `a Unicode 17 ideograph word is laid out whole (${astral.units} UTF-16 units for 2 ideographs)`)
+  ok(astral.selected === ASTRAL_WORD, `and selected whole (“${astral.selected}”)`)
+  ok(astralPayload?.text === ASTRAL_WORD, 'and reaches the app whole')
+  ok(!/[\uD800-\uDBFF]$/.test(astralPayload?.text ?? '')
+    && !/^[\uDC00-\uDFFF]/.test(astralPayload?.text ?? ''),
+    'with no half of a surrogate pair anywhere in it')
+  await scanPage.screenshot({ path: join(SHOTS, '13-ocr-astral.png') })
+
+  // A reading rule that rewrites text (simplified to traditional) must leave a
+  // fixed-layout page alone: its glyphs are baked into the bitmap, so converted
+  // text would no longer be the text on the page — and for a recognised word it
+  // would no longer be what the image says either.
+  const converted = await scanPage.evaluate(async () => {
+    window.readingFeatures({ convertChineseMode: 's2t' })
+    await new Promise(resolve => setTimeout(resolve, 300))
+    const doc = window.reader.view.renderer.getContents()
+      .find(c => c.doc?.querySelector('#canvas > canvas')).doc
+    const spans = Array.from(doc.querySelectorAll('.textLayer span[data-ocr-word]'))
+    return {
+      han: spans.find(s => s.dataset.ocrWord === '3')?.textContent ?? null,
+      astral: spans.find(s => s.dataset.ocrWord === '2')?.textContent ?? null,
+      astralUnits: spans.find(s => s.dataset.ocrWord === '2')?.textContent?.length ?? 0,
+    }
+  })
+  ok(converted.han === '汉字', `a scanned page keeps the text the image has (“${converted.han}”)`)
+  ok(converted.astral === ASTRAL_WORD && converted.astralUnits === 4,
+    'and the Unicode 17 ideographs stay whole in it')
+  ok(!converted.astral.includes('\uFFFD'), 'with nothing turned into a replacement character')
+
   const saved = await lastCall(scanPage, 'ocrSave')
   ok(saved?.page === 0 && saved?.words?.length === words.length,
     `the words are handed to the app (${saved?.words?.length} of them)`)
@@ -677,6 +728,7 @@ const run = async () => {
   const reopened = await reopenPage.evaluate(() => {
     const doc = window.reader.view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas')).doc
     const spans = Array.from(doc.querySelectorAll('.textLayer span[data-ocr-word]'))
+    const astral = spans.find(s => s.dataset.ocrWord === '2')?.textContent ?? null
     const frame = doc.defaultView.frameElement.getBoundingClientRect()
     const span = spans[0]?.getBoundingClientRect?.() ?? null
     return {
@@ -685,6 +737,7 @@ const run = async () => {
       first: spans[0]?.textContent ?? null,
       width: span?.width ?? 0,
       onScreen: span ? { x: frame.left + span.left, y: frame.top + span.top } : null,
+      astral,
     }
   })
   ok(reopened.requests === 0,
@@ -693,6 +746,8 @@ const run = async () => {
   ok(reopened.first === words[0].text, `the same words (“${reopened.first}”)`)
   ok(Math.abs(reopened.width - ocr.firstBox.width) < 2,
     `in the same place (${ocr.firstBox.width.toFixed(1)} → ${reopened.width.toFixed(1)}px)`)
+  ok(reopened.astral === ASTRAL_WORD,
+    'the Unicode 17 ideographs come back whole from the app store too')
   await reopenPage.screenshot({ path: join(SHOTS, '14-ocr-restored.png') })
 
   // The annotation is added before the restore can have landed (the words come

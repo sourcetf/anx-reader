@@ -1,3 +1,5 @@
+import { NO_SPACE_SCRIPT } from './unicode.js'
+
 /**
  * Reassembles paragraphs from a pdf.js text layer.
  *
@@ -21,9 +23,6 @@ const WORD_SPACE_EM = 0.3
 
 const HYPHEN_AT_END = /[-\u2010\u00AD]\s*$/u
 const SOFT_HYPHEN_AT_END = /\u00AD\s*$/u
-// Scripts set without inter-word spaces, plus their punctuation blocks.
-const NO_SPACE_SCRIPT =
-  /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303F\uFF00-\uFFEF]/u
 
 /**
  * @typedef {object} PdfLine

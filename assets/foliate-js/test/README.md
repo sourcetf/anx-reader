@@ -8,6 +8,7 @@ and the checked-in legacy build in `../dist`.
 ```bash
 npm install jsdom             # not a dependency of the app
 cd assets/foliate-js/test
+node unicode.test.mjs         # the Unicode classes and the text cuts (no DOM)
 node pdf.test.mjs             # makePDF, pdf-text, per-page CFIs
 node fxl.test.mjs             # the fixed-layout renderer (ES modules)
 node view.test.mjs            # the whole read path: modules, then dist/bundle.js

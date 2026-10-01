@@ -10,6 +10,7 @@ import {
   ocrPage, restoreOcrWords, pageHasOwnText, injectOcrTextLayer,
   pageTextLayer, OCR_HOLD_MS, OCR_DRIFT_PX,
 } from './ocr-layer.js'
+import { HAN_GLOBAL, codePointMap, truncate } from './unicode.js'
 const { configure, ZipReader, BlobReader, TextWriter, BlobWriter } =
   await import('./vendor/zip.js')
 const { EPUB } = await import('./epub.js')
@@ -145,7 +146,7 @@ const buildRangeContextText = (range) => {
   contextText = _collapseWhitespace(contextText);
 
   if (contextText.length > MAX_CONTEXT_CHARS) {
-    return contextText.slice(0, MAX_CONTEXT_CHARS);
+    return truncate(contextText, MAX_CONTEXT_CHARS);
   }
 
   return contextText;
@@ -960,22 +961,18 @@ const convertChineseHandler = (mode, doc) => {
 
   const from = mode === 's2t' ? zh_s : zh_t
   const to = mode === 's2t' ? zh_t : zh_s
+  const table = codePointMap(from, to)
 
-
-
-
-  const convertTextNode = (node, from, to) => {
+  const convertTextNode = (node, table) => {
     if (node.nodeType === Node.TEXT_NODE) {
-      node.textContent = node.textContent.replace(/[\u4e00-\u9fa5]/g, (match) => {
-        return to[from.indexOf(match)] ?? match
-      });
+      node.textContent = node.textContent.replace(HAN_GLOBAL, (match) => table.get(match) ?? match);
     } else {
-      node.childNodes.forEach(child => convertTextNode(child, from, to));
+      node.childNodes.forEach(child => convertTextNode(child, table));
     }
   };
 
   doc.body.childNodes.forEach(node => {
-    convertTextNode(node, from, to);
+    convertTextNode(node, table);
   });
 }
 
@@ -1512,7 +1509,7 @@ class Reader {
       : null
 
     if (maxChars != null && content.length > maxChars) {
-      content = content.slice(0, maxChars)
+      content = truncate(content, maxChars)
     }
 
     return content
@@ -1776,7 +1773,7 @@ class Reader {
     }
     content = content.trim()
     if (content.length > 200) {
-      content = content.slice(0, 200) + '...'
+      content = truncate(content, 200) + '...'
     }
     const percentage = this.view.lastLocation.fraction
 

@@ -15,6 +15,10 @@ node server.mjs 8085 &                        # the app's shelf server, in node
 ANX_PDF_FIXTURES=/path/to/fixtures node read.test.mjs 8085
 ```
 
+The OCR section also presses a word set in Unicode 17's CJK Unified Ideographs
+Extension J (U+323B0..): astral, so each ideograph is a surrogate pair, and an
+engine on older Unicode tables does not know it is Han.
+
 `ANX_PDF_FIXTURES` must contain `sample-alice.pdf` and
 `sample-alice-outline.pdf` (see `../README.md`), plus `sample-alice-scan.pdf`
 for the OCR section — an image-only PDF, which `python3` + `Pillow` can make:

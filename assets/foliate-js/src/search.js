@@ -1,3 +1,5 @@
+import { truncate, truncateTail } from './unicode.js'
+
 // length for context in excerpts
 const CONTEXT_LENGTH = 50
 
@@ -15,8 +17,11 @@ const makeExcerpt = (strs, { startIndex, startOffset, endIndex, endOffset }) => 
     const trimmedEnd = normalizeWhitespace(end.slice(endOffset)).trimEnd()
     const ellipsisPre = trimmedStart.length < CONTEXT_LENGTH ? '' : '…'
     const ellipsisPost = trimmedEnd.length < CONTEXT_LENGTH ? '' : '…'
-    const pre = `${ellipsisPre}${trimmedStart.slice(-CONTEXT_LENGTH)}`
-    const post = `${trimmedEnd.slice(0, CONTEXT_LENGTH)}${ellipsisPost}`
+    // The excerpt is shown and sent to the app, so it must not end up with half
+    // of a surrogate pair at either cut (a book set in Unicode 17's CJK
+    // Extension J is full of them).
+    const pre = `${ellipsisPre}${truncateTail(trimmedStart, CONTEXT_LENGTH)}`
+    const post = `${truncate(trimmedEnd, CONTEXT_LENGTH)}${ellipsisPost}`
     return { pre, match, post }
 }
 

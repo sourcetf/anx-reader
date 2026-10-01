@@ -92,8 +92,11 @@ ok(!!window.pdfjsWorker?.WorkerMessageHandler, 'vendored pdf.worker.js exposes W
 // The foliate modules are ES modules; import them from copies the loader accepts
 const scratch = join(tmpdir(), 'anx-pdf-port-test')
 mkdirSync(scratch, { recursive: true })
-// pdf.js imports the OCR layer helpers, so the copy has to travel with it.
-writeFileSync(join(scratch, 'ocr-layer.js'), readFileSync(join(SRC, 'ocr-layer.js')))
+// pdf.js imports the OCR layer helpers and pdf-text.js the Unicode classes, so
+// the copies have to travel with them.
+for (const dep of ['ocr-layer.js', 'unicode.js']) {
+  writeFileSync(join(scratch, dep), readFileSync(join(SRC, dep)))
+}
 const importModule = async (name) => {
   const target = join(scratch, name.replace(/\.js$/, '.mjs'))
   writeFileSync(target, readFileSync(join(SRC, name)))
