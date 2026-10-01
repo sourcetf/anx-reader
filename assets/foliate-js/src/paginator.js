@@ -172,6 +172,10 @@ const makeMarginals = (length, part) => Array.from({ length }, () => {
 })
 
 const setStylesImportant = (el, styles) => {
+  // A layout pass can land before the document it belongs to has a body (the
+  // iframe is mid-load, or the section was just replaced). There is nothing to
+  // style yet and the next expand renders again, so this is not an error.
+  if (!el) return
   const { style } = el
   for (const [k, v] of Object.entries(styles)) style.setProperty(k, v, 'important')
 }
@@ -265,7 +269,7 @@ class View {
   scrolled({ gap, columnWidth }) {
     const vertical = this.#vertical
     const doc = this.document
-    if (!doc) return
+    if (!doc?.documentElement) return
     setStylesImportant(doc.documentElement, {
       'box-sizing': 'border-box',
       'padding': vertical ? `${gap}px 0` : `0 ${gap}px`,
@@ -285,6 +289,7 @@ class View {
     this.#size = vertical ? height : width
 
     const doc = this.document
+    if (!doc?.documentElement) return
 
     const verticlePadding = `${gap / 2}px ${topMargin}px ${gap / 2}px ${bottomMargin}px`
     const horizontalPadding = `${topMargin}px ${gap / 2}px ${bottomMargin}px ${gap / 2}px`
@@ -320,7 +325,7 @@ class View {
     const { width, height, margin, columnWidth } = this.#layout
     const vertical = this.#vertical
     const doc = this.document
-    for (const el of doc.body.querySelectorAll('img, svg, video')) {
+    for (const el of doc?.body?.querySelectorAll('img, svg, video') ?? []) {
       // preserve max size if they are already set
       const { maxHeight, maxWidth } = doc.defaultView.getComputedStyle(el)
       // Cap max-width to the column width to prevent images from overflowing
