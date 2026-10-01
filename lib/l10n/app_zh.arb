@@ -926,5 +926,6 @@
     "searchEngineUrlTemplate": "URL 模板",
     "searchEngineUrlRequired": "请输入 URL 模板",
     "searchEngineUrlInvalid": "URL 必须包含搜索查询占位符且使用 http/https 协议",
-    "searchEngineAdded": "搜索引擎已添加"
+    "searchEngineAdded": "搜索引擎已添加",
+    "ocrNoTextFound": "這一頁沒有識別到文字。"
 }

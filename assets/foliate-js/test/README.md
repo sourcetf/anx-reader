@@ -25,7 +25,10 @@ ANX_PDF_FIXTURES=/path/to/fixtures node pdf.test.mjs
 
 `fixtures/sample-alice.pdf` (a text PDF with many pages) and
 `fixtures/sample-metadata.pdf` (whose Info title is `PDF Metadata` and author
-`Readest`) are the ones the expectations are written against.
+`Readest`) are the ones the expectations are written against. The browser
+suite additionally uses `sample-alice-outline.pdf` (an outline of twelve
+entries) and `sample-alice-scan.pdf` (an image-only PDF) — see
+`browser/README.md`.
 
 ## What the tests stand in for
 

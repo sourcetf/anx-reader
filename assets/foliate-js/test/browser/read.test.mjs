@@ -21,6 +21,7 @@ const BASE = `http://127.0.0.1:${PORT}`
 const FIXTURES = process.env.ANX_PDF_FIXTURES ?? join(here, 'fixtures')
 const PDF = join(FIXTURES, 'sample-alice.pdf')
 const OUTLINE_PDF = join(FIXTURES, 'sample-alice-outline.pdf')
+const SCAN_PDF = join(FIXTURES, 'sample-alice-scan.pdf')
 const SHOTS = join(here, 'shots')
 mkdirSync(SHOTS, { recursive: true })
 
@@ -444,7 +445,198 @@ const run = async () => {
   await tocPage.close()
 
   // -------------------------------------------------------------------------
-  console.log('\n[13] the page reported no errors')
+  console.log('\n[13] OCR turns a long press on a scanned page into a selection')
+  // The page is a bitmap with no text of its own, so a press is held until the
+  // reader asks the app to OCR it. The app side is stubbed here with two words
+  // placed where the fixture's text is; what is under test is everything around
+  // it: the hold detection, the request, the text layer that comes back, the
+  // selection it drives and the menu payload that follows.
+  const scanPage = await context.newPage()
+  scanPage.on('pageerror', e => errors.push(`ocr: ${String(e)}`))
+  scanPage.on('console', m => {
+    if (m.type() === 'error') errors.push(`ocr console: ${m.text()}`)
+  })
+  await scanPage.addInitScript(() => {
+    window.__ocrRequests = 0
+    window.__ocrAnswer = { ok: false, reason: 'stub' }
+    const original = window.flutter_inappwebview.callHandler
+    window.flutter_inappwebview.callHandler = (name, data) => {
+      if (name === 'ocrPage') {
+        window.__ocrRequests++
+        original(name, data)   // keep the call in the harness's log
+        return Promise.resolve(window.__ocrAnswer)
+      }
+      return original(name, data)
+    }
+  })
+  await scanPage.goto(readerUrl({ file: SCAN_PDF }))
+  await scanPage.waitForFunction(() => window.reader?.view?.isFixedLayout === true, { timeout: 60000 })
+  await scanPage.waitForFunction(() => {
+    const contents = window.reader?.view?.renderer?.getContents?.() ?? []
+    return contents.some(c => c.doc?.querySelector('#canvas > canvas')?.width > 0)
+  }, { timeout: 60000 })
+
+  const scanned = await scanPage.evaluate(() => {
+    const view = window.reader.view
+    const frame = view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas'))
+    const doc = frame.doc
+    const canvas = doc.querySelector('#canvas > canvas')
+    const layer = doc.querySelector('.textLayer')
+    const box = canvas.getBoundingClientRect()
+    return {
+      pages: view.renderer.pages,
+      spans: layer.querySelectorAll('span').length,
+      text: layer.textContent.trim(),
+      box: { x: box.x, y: box.y, w: box.width, h: box.height },
+    }
+  })
+  ok(scanned.spans === 0 && scanned.text === '',
+    `a scanned page carries no selectable text (${scanned.spans} spans)`)
+
+  // Two words, as fractions of the page: what an OCR engine reports is bitmap
+  // pixels, so the stub converts them against the live canvas the way ML Kit's
+  // answer would arrive.
+  const words = [
+    { text: 'Alice', x: 0.12, y: 0.18, w: 0.30, h: 0.05 },
+    { text: 'rabbit', x: 0.12, y: 0.42, w: 0.36, h: 0.05 },
+  ]
+  const answerWith = (list) => scanPage.evaluate((words) => {
+    const doc = window.reader.view.renderer.getContents()
+      .find(c => c.doc?.querySelector('#canvas > canvas')).doc
+    const canvas = doc.querySelector('#canvas > canvas')
+    window.__ocrAnswer = { ok: true, words: words.map(word => ({
+      text: word.text,
+      x: word.x * canvas.width, y: word.y * canvas.height,
+      w: word.w * canvas.width, h: word.h * canvas.height,
+    })) }
+  }, list)
+  await answerWith(words)
+
+  // A long press with no movement, dispatched into the page's own document so
+  // the coordinates are the page's, exactly as on a device.
+  const pressAt = async (nx, ny) => {
+    await scanPage.evaluate(({ nx, ny }) => {
+      const doc = window.reader.view.renderer.getContents()
+        .find(c => c.doc?.querySelector('#canvas > canvas')).doc
+      const canvas = doc.querySelector('#canvas > canvas')
+      const box = canvas.getBoundingClientRect()
+      const x = box.x + box.width * nx
+      const y = box.y + box.height * ny
+      const view = doc.defaultView
+      const target = doc.elementFromPoint(x, y) ?? canvas
+      const touch = new view.Touch({
+        identifier: 1, target, clientX: x, clientY: y, screenX: x, screenY: y,
+        pageX: x, pageY: y, radiusX: 10, radiusY: 10, force: 1,
+      })
+      const make = type => new view.TouchEvent(type, {
+        bubbles: true, cancelable: true, composed: true,
+        touches: type === 'touchend' ? [] : [touch],
+        targetTouches: type === 'touchend' ? [] : [touch],
+        changedTouches: [touch],
+      })
+      target.dispatchEvent(make('touchstart'))
+      window.__pressRelease = () => target.dispatchEvent(make('touchend'))
+    }, { nx, ny })
+    await scanPage.waitForTimeout(600)   // longer than the reader's hold threshold
+    await scanPage.evaluate(() => window.__pressRelease())
+  }
+
+  await pressAt(0.25, 0.20)
+  await scanPage.waitForTimeout(1500)
+  const ocr = await scanPage.evaluate(() => {
+    const view = window.reader.view
+    const doc = view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas')).doc
+    const layer = doc.querySelector('.textLayer')
+    const spans = Array.from(layer.querySelectorAll('span[data-ocr-word]'))
+    const selection = doc.getSelection()
+    return {
+      requests: window.__ocrRequests,
+      spans: spans.length,
+      first: spans[0]?.textContent ?? null,
+      firstBox: spans[0]?.getBoundingClientRect?.() ?? null,
+      selected: selection?.toString?.() ?? '',
+    }
+  })
+  const ocrCall = await lastCall(scanPage, 'ocrPage')
+  const ocrPayload = await lastCall(scanPage, 'onSelectionEnd')
+  ok(ocr.requests === 1, `the hold asked the app to OCR the page (${ocr.requests} request)`)
+  ok(String(ocrCall?.image ?? '').startsWith('data:image/png;base64,'),
+    `the request carries the page bitmap (${String(ocrCall?.image ?? '').slice(0, 30)}…)`)
+  ok(ocrCall?.page === 0, 'and the page it came from')
+  ok(ocr.spans === words.length, `the words came back as a text layer (${ocr.spans} spans)`)
+  ok(ocr.first === words[0].text, `the layer holds the recognised words (“${ocr.first}”)`)
+  ok(Math.abs((ocr.firstBox?.width ?? 0) - scanned.box.w * words[0].w) < 2,
+    `a word is laid out where the image says (${ocr.firstBox?.width?.toFixed(1)}px wide)`)
+  ok(ocr.selected === words[0].text, `the press selected the word under it (“${ocr.selected}”)`)
+  ok(ocrPayload?.text === words[0].text,
+    `and the selection reached Dart (“${ocrPayload?.text}”)`)
+  ok(String(ocrPayload?.cfi ?? '').startsWith('epubcfi'),
+    `with a CFI (${String(ocrPayload?.cfi).slice(0, 40)})`)
+  ok(ocrPayload?.fixedLayout === true && ocrPayload?.footnote === false,
+    'the payload says it is a highlightable fixed-layout selection')
+  await scanPage.screenshot({ path: join(SHOTS, '13-ocr-selection.png') })
+
+  // A zoom re-renders the page and clears the text layer with the bitmap. The
+  // words are kept per page, so the next press rebuilds the layer without asking
+  // the app again — and, since the boxes are fractions of the page, the same word
+  // yields the same CFI at any zoom (a highlight made at one zoom has to resolve
+  // at another).
+  await scanPage.evaluate(async () => {
+    window.changeStyle({ pdfZoomMode: 'fit-width', pdfZoomLevel: 200 })
+    await new Promise(resolve => setTimeout(resolve, 1800))
+  })
+  const afterZoom = await scanPage.evaluate(() => {
+    const doc = window.reader.view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas')).doc
+    const canvas = doc.querySelector('#canvas > canvas')
+    return {
+      canvasWidth: canvas.width,
+      spans: doc.querySelectorAll('.textLayer span[data-ocr-word]').length,
+    }
+  })
+  ok(afterZoom.canvasWidth > scanned.box.w, `the zoom re-rasterised the bitmap (${afterZoom.canvasWidth}px)`)
+  ok(afterZoom.spans === 0, 'which clears the words with the page')
+
+  await pressAt(0.25, 0.20)
+  await scanPage.waitForTimeout(1500)
+  const rebuilt = await scanPage.evaluate(() => {
+    const doc = window.reader.view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas')).doc
+    const spans = Array.from(doc.querySelectorAll('.textLayer span[data-ocr-word]'))
+    return {
+      requests: window.__ocrRequests,
+      spans: spans.length,
+      width: spans[0]?.getBoundingClientRect?.().width ?? 0,
+      selected: doc.getSelection()?.toString?.() ?? '',
+    }
+  })
+  const zoomPayload = await lastCall(scanPage, 'onSelectionEnd')
+  ok(rebuilt.requests === 1, `the words are remembered, not recognised twice (${rebuilt.requests} request)`)
+  ok(rebuilt.spans === words.length, `the press puts them back (${rebuilt.spans} spans)`)
+  ok(rebuilt.width > ocr.firstBox.width,
+    `laid out for the new page size (${ocr.firstBox.width.toFixed(1)} → ${rebuilt.width.toFixed(1)}px)`)
+  ok(rebuilt.selected === words[0].text, `the same word is under the same point (“${rebuilt.selected}”)`)
+  ok(!!zoomPayload?.cfi && zoomPayload.cfi === ocrPayload.cfi,
+    `and its CFI does not move with the zoom (${String(zoomPayload?.cfi).slice(0, 40)})`)
+
+  // A page whose OCR yields nothing must say so instead of failing silently.
+  await scanPage.evaluate(() => {
+    window.__ocrAnswer = { ok: false, reason: 'no text found' }
+  })
+  const second = await scanPage.evaluate(async () => {
+    window.changeStyle({ pdfZoomMode: 'fit-page', pdfZoomLevel: 100 })
+    window.nextPage()
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    return window.reader.view.renderer.index
+  })
+  await pressAt(0.25, 0.20)
+  await scanPage.waitForTimeout(1500)
+  const unavailable = await lastCall(scanPage, 'ocrUnavailable')
+  ok(second > 0, `the press was made on another page (${second})`)
+  ok(!!unavailable, 'a page the OCR could not read reports it to the app')
+  ok(unavailable?.page === second, `naming the page (${unavailable?.page})`)
+  await scanPage.close()
+
+  // -------------------------------------------------------------------------
+  console.log('\n[14] the page reported no errors')
   const realErrors = errors.filter(e => !/favicon|Download the React/i.test(e))
   ok(realErrors.length === 0, 'no console/page errors', realErrors.slice(0, 3).join(' | '))
 

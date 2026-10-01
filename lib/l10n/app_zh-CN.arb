@@ -919,5 +919,6 @@
   "aiChatFontSize": "字体大小",
   "aiModelSwitchTitle": "切换模型",
   "aiModelEnterManually": "输入模型名称",
-  "aiModelOrSelectBelow": "或从列表中选择："
+  "aiModelOrSelectBelow": "或从列表中选择：",
+  "ocrNoTextFound": "这一页没有识别到文字。"
 }

@@ -28,6 +28,7 @@ import 'package:anx_reader/providers/bookmark.dart';
 import 'package:anx_reader/providers/chapter_content_bridge.dart';
 import 'package:anx_reader/providers/current_reading.dart';
 import 'package:anx_reader/service/book_player/book_player_server.dart';
+import 'package:anx_reader/service/ocr/ocr_service.dart';
 import 'package:anx_reader/providers/toc_search.dart';
 import 'package:anx_reader/service/tts/base_tts.dart';
 import 'package:anx_reader/service/tts/models/tts_sentence.dart';
@@ -37,6 +38,7 @@ import 'package:anx_reader/utils/js/convert_dart_color_to_js.dart';
 import 'package:anx_reader/utils/platform_utils.dart';
 import 'package:anx_reader/models/book_note.dart';
 import 'package:anx_reader/utils/log/common.dart';
+import 'package:anx_reader/utils/toast/common.dart';
 import 'package:anx_reader/utils/webView/gererate_url.dart';
 import 'package:anx_reader/utils/webView/webview_console_message.dart';
 import 'package:anx_reader/widgets/bookshelf/book_cover.dart';
@@ -711,6 +713,29 @@ class EpubPlayerState extends ConsumerState<EpubPlayer>
           final toc = t.map((i) => TocItem.fromJson(i)).toList();
           ref.read(bookTocProvider.notifier).setToc(toc);
         });
+    // A long press on a scanned PDF page asks for OCR; the words come back with
+    // their boxes and the reader injects them as that page's text layer.
+    controller.addJavaScriptHandler(
+      handlerName: 'ocrPage',
+      callback: (args) async {
+        final payload = args.isNotEmpty ? args.first : null;
+        if (payload is! Map) return {'ok': false, 'reason': 'bad request'};
+        return await OcrService.recognize(
+          payload['image']?.toString() ?? '',
+          languageCode: payload['language']?.toString(),
+        );
+      },
+    );
+    controller.addJavaScriptHandler(
+      handlerName: 'ocrUnavailable',
+      callback: (args) {
+        final payload = args.isNotEmpty ? args.first : null;
+        final reason = payload is Map ? payload['reason'] : payload;
+        AnxLog.info('OCR found no text on page '
+            '${payload is Map ? payload['page'] : '?'}: $reason');
+        AnxToast.show(L10n.of(context).ocrNoTextFound);
+      },
+    );
     controller.addJavaScriptHandler(
         handlerName: 'onSelectionEnd',
         callback: (args) {

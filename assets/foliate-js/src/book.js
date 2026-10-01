@@ -1117,6 +1117,8 @@ class Reader {
     id: null,
   }
   #ignoreBookmarkGesture = false
+  // Where a touch started, so a press that stays put can be told from a gesture.
+  #pressStart = null
   constructor() {
     this.#footnoteHandler.addEventListener('before-render', e => {
       const { view } = e.detail
@@ -1516,6 +1518,15 @@ class Reader {
 
   #onTouchStart = ({ detail: e }) => {
     if (this.#ignoreTouch()) return;
+    const pressTouch = e.touch ?? {}
+    this.#pressStart = {
+      x: pressTouch.clientX ?? pressTouch.screenX ?? 0,
+      y: pressTouch.clientY ?? pressTouch.screenY ?? 0,
+      time: Date.now(),
+      // A touch on a fixed-layout page is delivered by that page's own
+      // document, so this is the document the coordinates above belong to.
+      doc: pressTouch.target?.ownerDocument ?? null,
+    };
 
     this.#bookMarkExists = !!document.getElementById('bookmark-icon');
     this.#upTriggered = false;
@@ -1526,6 +1537,46 @@ class Reader {
     const screenHeight = window.innerHeight;
     const startY = touch?.screenY ?? touch?.clientY ?? 0;
     this.#ignoreBookmarkGesture = startY < screenHeight * 0.1;
+  }
+
+  // OCR the page under a point, then select the word that sits there. The
+  // injected text layer makes the page behave like any other from here on.
+  #ocrAt = async (x, y, sourceDoc = null) => {
+    const contents = this.view?.renderer?.getContents?.() ?? []
+    // A press is delivered by the page's own document, so x/y are that page's
+    // client coordinates; a press with no source document is matched to a frame
+    // by rect instead, and its point moved into that page's coordinates first.
+    let hit = contents.find(({ doc }) => doc && doc === sourceDoc)
+    if (!hit) {
+      hit = contents.find(({ doc }) => {
+        const box = doc?.defaultView?.frameElement?.getBoundingClientRect?.()
+        if (!box || x < box.left || x > box.right || y < box.top || y > box.bottom) return false
+        x -= box.left
+        y -= box.top
+        return true
+      })
+    }
+    const doc = hit?.doc
+    if (!doc || hasSelectableText(doc)) return
+    const words = await ocrPage(hit.index)
+    if (!words || !injectOcrTextLayer(doc, words)) return
+    const canvas = doc.querySelector('#canvas > canvas')
+    const box = canvas.getBoundingClientRect()
+    if (!box.width || !box.height) return
+    const nx = (x - box.left) / box.width
+    const ny = (y - box.top) / box.height
+    const inside = words.find(w =>
+      nx >= w.x && nx <= w.x + w.w && ny >= w.y && ny <= w.y + w.h)
+    if (!inside) return
+    const index = words.indexOf(inside)
+    const span = pageTextLayer(doc)?.querySelector(`[data-ocr-word="${index}"]`)
+    if (!span) return
+    const range = doc.createRange()
+    range.selectNodeContents(span)
+    const selection = doc.defaultView.getSelection()
+    selection.removeAllRanges()
+    selection.addRange(range)
+    handleSelection(this.view, doc, hit.index)
   }
 
   #onTouchMove = ({ detail: e }) => {
@@ -1551,6 +1602,19 @@ class Reader {
   }
 
   #onTouchEnd = ({ detail: e }) => {
+    // A press that neither moved nor turned into a selection on a page with no
+    // text of its own is a scanned page: run it through OCR, then select the
+    // word under the finger so the usual context menu opens over it.
+    const press = this.#pressStart
+    this.#pressStart = null
+    if (press && this.view?.isFixedLayout && !this.#ignoreTouch()) {
+      const dx = Math.abs(e.touchState?.delta?.x ?? 0)
+      const dy = Math.abs(e.touchState?.delta?.y ?? 0)
+      if (Date.now() - press.time > OCR_HOLD_MS && dx < OCR_DRIFT_PX && dy < OCR_DRIFT_PX) {
+        this.#ocrAt(press.x, press.y, press.doc)
+        return
+      }
+    }
     // A fixed-layout page has no scrolling container of its own, so a left/right
     // swipe is turned into a page turn here, in the app layer (readest does the
     // same in its reader): the renderer only reports the gesture. A reflowable
@@ -1843,6 +1907,90 @@ const ensurePageColorsFilter = (doc, pageColors) => {
   host.append(svg)
   ;(doc.body ?? doc.documentElement).append(host)
   return PAGE_COLORS_FILTER
+}
+
+// --- OCR for pages that carry no text of their own (scanned PDFs) -----------
+// A scanned page is a bitmap with nothing to select, so a long press runs the
+// page through OCR and the words come back as the page's text layer. From there
+// the reader's ordinary paths apply: the press selects a word, the context menu
+// opens, highlights and search work exactly as on a text page.
+const OCR_HOLD_MS = 450
+const OCR_DRIFT_PX = 14
+const ocrWordsByPage = new Map()
+
+const pageTextLayer = doc => doc?.querySelector('.textLayer') ?? null
+
+const hasSelectableText = (doc) => {
+    const layer = pageTextLayer(doc)
+    return !!layer && !!layer.textContent?.trim()
+}
+
+const injectOcrTextLayer = (doc, words) => {
+    const layer = pageTextLayer(doc)
+    const canvas = doc.querySelector('#canvas > canvas')
+    if (!layer || !canvas) return false
+    // The normalised boxes are placed against the canvas's own CSS box, which is
+    // the same space the text layer covers at any zoom.
+    const width = canvas.clientWidth || canvas.width
+    const height = canvas.clientHeight || canvas.height
+    if (!width || !height) return false
+    layer.replaceChildren()
+    words.forEach((word, i) => {
+        const span = doc.createElement('span')
+        span.textContent = word.text
+        span.dataset.ocrWord = String(i)
+        const w = word.w * width
+        const h = word.h * height
+        Object.assign(span.style, {
+            position: 'absolute',
+            left: `${word.x * width}px`,
+            top: `${word.y * height}px`,
+            width: `${w}px`,
+            height: `${h}px`,
+            fontSize: `${Math.max(h, 1)}px`,
+            lineHeight: `${h}px`,
+            whiteSpace: 'pre',
+            color: 'transparent',
+            transformOrigin: '0 0',
+        })
+        layer.append(span)
+    })
+    return layer.childElementCount > 0
+}
+
+const ocrPage = async (index) => {
+    if (ocrWordsByPage.has(index)) return ocrWordsByPage.get(index)
+    const content = (reader.view?.renderer?.getContents?.() ?? [])
+        .find(c => c.index === index)
+    const doc = content?.doc
+    const canvas = doc?.querySelector('#canvas > canvas')
+    if (!canvas) return null
+    let answer
+    try {
+        answer = await window.flutter_inappwebview.callHandler('ocrPage', {
+            image: canvas.toDataURL('image/png'),
+            page: index,
+            language: reader.view?.book?.metadata?.language ?? '',
+        })
+    } catch (e) {
+        console.warn('OCR request failed', e)
+        return null
+    }
+    if (!answer?.ok || !answer.words?.length) {
+        callFlutter('ocrUnavailable', { page: index, reason: answer?.reason ?? '' })
+        return null
+    }
+    // ML Kit answers in bitmap pixels; the page needs them as a fraction of the
+    // page, which is what survives a re-render at another zoom.
+    const words = answer.words.map(w => ({
+        text: String(w.text ?? ''),
+        x: w.x / canvas.width,
+        y: w.y / canvas.height,
+        w: w.w / canvas.width,
+        h: w.h / canvas.height,
+    })).filter(w => w.text)
+    ocrWordsByPage.set(index, words)
+    return words
 }
 
 // Fixed-layout pages live in their own iframe documents, where the reader's

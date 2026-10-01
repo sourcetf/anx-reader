@@ -4,8 +4,10 @@ Drives the actual reader page (`../../index.html` + `../../src/book.js`) in a re
 Chromium — the same engine family as Android WebView — with the Flutter bridge
 stubbed, and checks what a PDF does end to end: page render, crisp zoom, page
 turns, the continuous scroll flow, in-book search, paragraph-joined selection
-text, highlights, TTS, bookmarks and the import metadata path. It also writes
-screenshots of each step to `shots/`.
+text, highlights, TTS, bookmarks, the import metadata path, and OCR of a scanned
+page on a long press (the `ocrPage` bridge is stubbed there: what is checked is
+the hold, the request, the text layer that comes back and the selection it
+drives). It also writes screenshots of each step to `shots/`.
 
 ```bash
 npm install playwright && npx playwright install chromium
@@ -13,7 +15,17 @@ node server.mjs 8085 &                        # the app's shelf server, in node
 ANX_PDF_FIXTURES=/path/to/fixtures node read.test.mjs 8085
 ```
 
-`ANX_PDF_FIXTURES` must contain `sample-alice.pdf` (see `../README.md`).
+`ANX_PDF_FIXTURES` must contain `sample-alice.pdf` and
+`sample-alice-outline.pdf` (see `../README.md`), plus `sample-alice-scan.pdf`
+for the OCR section — an image-only PDF, which `python3` + `Pillow` can make:
+
+```python
+from PIL import Image, ImageDraw
+pages = [Image.new('RGB', (1240, 1754), 'white') for _ in range(3)]
+ImageDraw.Draw(pages[0]).text((150, 160), 'A SCANNED PAGE', fill='black')
+pages[0].save('sample-alice-scan.pdf', 'PDF', resolution=150.0,
+              save_all=True, append_images=pages[1:])
+```
 
 This is the test that catches what jsdom cannot: real layout, real canvas
 rasterisation, iframes inside the renderer's shadow root, and the visual result.

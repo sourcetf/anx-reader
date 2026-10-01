@@ -932,5 +932,6 @@
   "searchEngineUrlTemplate": "URL Template",
   "searchEngineUrlRequired": "Please enter a URL template",
   "searchEngineUrlInvalid": "URL must contain a search query placeholder and use http/https",
-  "searchEngineAdded": "Search engine added"
+  "searchEngineAdded": "Search engine added",
+  "ocrNoTextFound": "No text could be recognised on this page."
 }
