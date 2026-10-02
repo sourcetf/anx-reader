@@ -84,24 +84,210 @@ export const injectOcrTextLayer = (doc, words) => {
  * words, or in the leading above a line, often enough that picking the nearest
  * word on that line is what the reader expects; a press nowhere near a line
  * picks nothing at all.
+ *
+ * The distances are measured in a typical line's height, not in the page's own
+ * fractions and not in the candidate's size. A page of this kind carries
+ * display text and lettering read out of an illustration alongside body text,
+ * and those words are several times the height of a body word: a tolerance
+ * scaled to them would reach across the line below and answer a press on body
+ * text with a word out of the drawing above it.
  */
 export const nearestOcrWord = (words, nx, ny) => {
+    if (!words?.length) return null
+    const heights = words.map(word => word.h).filter(h => h > 0)
+        .sort((a, b) => a - b)
+    if (!heights.length) return null
+    const unit = heights[heights.length >> 1]
     let best = null
     let bestScore = Infinity
     for (const word of words) {
-        const dx = Math.max(word.x - nx, 0, nx - (word.x + word.w))
-        const dy = Math.max(word.y - ny, 0, ny - (word.y + word.h))
-        // Stay on the line whose leading the press is in (0.75 of a line either
-        // way), and within a fifth of a word's width sideways.
-        if (dy > word.h * 0.75) continue
-        if (dx > Math.max(word.w * 0.5, 0.01)) continue
-        const score = dy * 2 + dx
+        const dx = Math.max(word.x - nx, 0, nx - (word.x + word.w)) / unit
+        const dy = Math.max(word.y - ny, 0, ny - (word.y + word.h)) / unit
+        // Stay on the press's own line: a word a line away is another line,
+        // however close its box happens to come.
+        if (dy > 0.75) continue
+        // A few word-widths along the line, in the same unit.
+        if (dx > 4) continue
+        const score = dy * 4 + dx
         if (score < bestScore) {
             bestScore = score
             best = word
         }
     }
     return best
+}
+
+/** The word spans of a recognised page, in the order they were injected. */
+const ocrWordSpans = doc =>
+    Array.from(pageTextLayer(doc)?.querySelectorAll('span[data-ocr-word]') ?? [])
+
+/** The word a node belongs to, whether the node is its text or the span itself. */
+const spanOf = node => {
+    const el = node?.nodeType === 1 ? node : node?.parentElement
+    return el?.closest?.('span[data-ocr-word]') ?? null
+}
+
+/**
+ * The word a touch at `(x, y)` — the page's own client coordinates — means, as
+ * an index into the page's words. The element the touch landed on answers it
+ * outright when the page's words are already there; otherwise the point is
+ * tested against the boxes and then against `nearestOcrWord`.
+ */
+export const wordIndexAt = (doc, x, y, target = null) => {
+    const words = ocrWordsByPage.get(sectionIndexOfDoc(doc)) ?? []
+    const spans = ocrWordSpans(doc)
+    if (!words.length || !spans.length) return -1
+    const touched = target?.closest?.('span[data-ocr-word]')
+    if (touched && doc.contains(touched)) {
+        const index = Number(touched.dataset.ocrWord)
+        if (Number.isInteger(index) && index >= 0 && index < spans.length) return index
+    }
+    const canvas = doc.querySelector('#canvas > canvas')
+    const box = canvas?.getBoundingClientRect()
+    if (!box?.width || !box?.height) return -1
+    const nx = (x - box.left) / box.width
+    const ny = (y - box.top) / box.height
+    const inside = words.find(word =>
+        nx >= word.x && nx <= word.x + word.w && ny >= word.y && ny <= word.y + word.h)
+        ?? nearestOcrWord(words, nx, ny)
+    return inside ? words.indexOf(inside) : -1
+}
+
+/** The radius of a handle's grab, and the size of the dot that shows where it is. */
+const HANDLE_SIZE = 13
+const HANDLE_REACH = 24
+
+const handleStyle = () => ({
+    position: 'absolute',
+    width: `${HANDLE_SIZE}px`,
+    height: `${HANDLE_SIZE}px`,
+    marginLeft: `${-HANDLE_SIZE / 2}px`,
+    marginTop: `${-HANDLE_SIZE / 2}px`,
+    borderRadius: '50%',
+    background: '#1a73e8',
+    boxShadow: '0 0 0 2px #ffffff',
+    pointerEvents: 'none',
+})
+
+const handleLayerOf = doc => pageTextLayer(doc)?.querySelector('.anx-handles') ?? null
+
+export const hideOcrSelectionHandles = doc => {
+    handleLayerOf(doc)?.remove()
+}
+
+/**
+ * Show where the two ends of a recognised page's selection are, so a finger can
+ * take hold of them: the WebView draws the selection itself but no handles —
+ * a selection made in script gets no grips to drag.
+ */
+export const showOcrSelectionHandles = doc => {
+    const layer = pageTextLayer(doc)
+    const selection = doc?.defaultView?.getSelection?.()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    if (!layer || !range || range.collapsed) return hideOcrSelectionHandles(doc)
+    const rects = Array.from(range.getClientRects()).filter(r => r.width || r.height)
+    if (!rects.length) return hideOcrSelectionHandles(doc)
+    let box = handleLayerOf(doc)
+    if (!box) {
+        box = doc.createElement('div')
+        box.className = 'anx-handles'
+        Object.assign(box.style, {
+            position: 'absolute',
+            inset: '0',
+            pointerEvents: 'none',
+            zIndex: '3',
+        })
+        layer.append(box)
+    }
+    const base = layer.getBoundingClientRect()
+    const first = rects[0]
+    const last = rects[rects.length - 1]
+    const place = (side, x, y) => {
+        let handle = box.querySelector(`.anx-handle[data-anx-handle="${side}"]`)
+        if (!handle) {
+            handle = doc.createElement('div')
+            handle.className = 'anx-handle'
+            Object.assign(handle.style, handleStyle())
+            box.append(handle)
+        }
+        handle.dataset.anxHandle = side
+        handle.style.left = `${x - base.left}px`
+        handle.style.top = `${y - base.top}px`
+    }
+    place('start', first.left, first.top + first.height / 2)
+    place('end', last.right, last.top + last.height / 2)
+    return true
+}
+
+/**
+ * Which handle, if any, a touch at `(x, y)` is on: `'start'`, `'end'`, or
+ * nothing. The nearest one wins: the two grips of a short word sit a couple of
+ * dozen pixels apart, closer than either of them reaches.
+ */
+export const ocrHandleAt = (doc, x, y) => {
+    let best = null
+    let bestDistance = Infinity
+    for (const handle of handleLayerOf(doc)?.querySelectorAll('.anx-handle') ?? []) {
+        const rect = handle.getBoundingClientRect()
+        const dx = x - (rect.left + rect.width / 2)
+        const dy = y - (rect.top + rect.height / 2)
+        if (Math.abs(dx) > HANDLE_REACH || Math.abs(dy) > HANDLE_REACH) continue
+        const distance = Math.abs(dx) + Math.abs(dy)
+        if (distance < bestDistance) {
+            bestDistance = distance
+            best = handle.dataset.anxHandle
+        }
+    }
+    return best
+}
+
+/**
+ * The end of the selection that a drag of [side] leaves alone: the other edge,
+ * as the text node and offset it sits at. Taken when the finger goes down,
+ * because the page's own selection is free to collapse under a moving finger
+ * and the anchor is what the range is rebuilt from every time.
+ */
+export const ocrHandleAnchor = (doc, side) => {
+    const selection = doc?.defaultView?.getSelection?.()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    if (!range || range.collapsed) return null
+    const node = side === 'end' ? range.startContainer : range.endContainer
+    const offset = side === 'end' ? range.startOffset : range.endOffset
+    const span = spanOf(node)
+    if (!span) return null
+    return { index: Number(span.dataset.ocrWord), node, offset }
+}
+
+/**
+ * Move the handle being dragged to the word under the finger, so the selection
+ * grows or shrinks a word at a time. The whole range is rewritten from
+ * [anchor] on every move rather than one end nudged, so a selection the page
+ * collapses under the finger is put back on the next move instead of lost.
+ *
+ * A handle never reaches past the other one: dragged towards it, the selection
+ * stops at the word the anchor is in.
+ */
+export const dragOcrSelectionHandle = (doc, side, x, y, anchor) => {
+    const spans = ocrWordSpans(doc)
+    const index = wordIndexAt(doc, x, y)
+    if (!(index >= 0) || !spans[index] || !anchor) return false
+    const text = spans[index].firstChild
+    if (!text) return false
+    const selection = doc?.defaultView?.getSelection?.()
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+    if (!range) return false
+    const forward = side === 'end' ? index >= anchor.index : index <= anchor.index
+    if (!forward) return false
+    if (side === 'end') {
+        range.setStart(anchor.node, anchor.offset)
+        range.setEnd(text, text.data.length)
+    } else {
+        range.setEnd(anchor.node, anchor.offset)
+        range.setStart(text, 0)
+    }
+    if (range.collapsed) return false
+    showOcrSelectionHandles(doc)
+    return true
 }
 
 /**
