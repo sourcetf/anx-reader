@@ -1650,11 +1650,13 @@ class Reader {
       const touch = e.touch ?? {}
       const x = touch.clientX ?? press.x
       const y = touch.clientY ?? press.y
-      // A finger resting on a grip still reports moves at the same point, so
-      // what makes a drag a drag is how far it went, not that it moved.
+      // A finger resting on a grip still reports moves at the point it started
+      // from, and the grip sits in the gap at the end of the word it holds, so
+      // that gap is answered by the next word along. What makes a drag a drag
+      // is how far the finger went, not that moves arrived.
       if (Math.hypot(x - press.x, y - press.y) > HANDLE_DRAG_PX) press.moved = true
       e.preventDefault?.()
-      dragOcrSelectionHandle(press.doc, handleDrag, x, y, press.anchor)
+      if (press.moved) dragOcrSelectionHandle(press.doc, handleDrag, x, y, press.anchor)
       return
     }
     if (this.#ignoreTouch()) return;

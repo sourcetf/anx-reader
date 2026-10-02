@@ -865,14 +865,19 @@ const run = async () => {
 
   // A finger that comes down on a grip and stays there — a long press, which
   // still reports moves at the same point — is not asking to resize anything.
+  // The press lands inside the gap the grip reaches into, and nearer the next
+  // word than the one held: had those moves been applied, the word would have
+  // been swallowed and the range would have swallowed the next one instead.
   const tapped = await scanPage.evaluate(async () => {
     const doc = window.reader.view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas')).doc
-    const canvas = doc.querySelector('#canvas > canvas')
-    const h = doc.querySelector('.anx-handles .anx-handle[data-anx-handle="end"]')
-      .getBoundingClientRect()
-    const at = { x: h.left + h.width / 2, y: h.top + h.height / 2 }
+    const rect = sel => doc.querySelector(sel).getBoundingClientRect()
+    const grip = rect('.anx-handles .anx-handle[data-anx-handle="end"]')
+    const was = rect('.textLayer span[data-ocr-word="3"]')
+    const next = rect('.textLayer span[data-ocr-word="4"]')
+    const at = { x: was.right + (next.left - was.right) * 0.75, y: grip.top + grip.height / 2 }
+    const onGrip = Math.abs(at.x - (grip.left + grip.width / 2)) <= 24
     const before = doc.getSelection()?.toString() ?? ''
-    const el = doc.elementFromPoint(at.x, at.y) ?? canvas
+    const el = doc.elementFromPoint(at.x, at.y) ?? doc.querySelector('#canvas > canvas')
     const make = (type, p) => {
       const touch = new doc.defaultView.Touch({ identifier: 1, target: el,
         clientX: p.x, clientY: p.y, screenX: p.x, screenY: p.y,
@@ -888,8 +893,9 @@ const run = async () => {
     }
     el.dispatchEvent(make('touchend', at))
     await new Promise(r => setTimeout(r, 500))
-    return { before, after: doc.getSelection()?.toString() ?? '' }
+    return { onGrip, before, after: doc.getSelection()?.toString() ?? '' }
   })
+  ok(tapped.onGrip, `the press below lands on the grip (${tapped.onGrip})`)
   ok(tapped.after === tapped.before && tapped.after !== '',
     `a long press on a grip does not resize the selection (“${tapped.after}”)`)
 
