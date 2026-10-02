@@ -79,6 +79,32 @@ export const injectOcrTextLayer = (doc, words) => {
 }
 
 /**
+ * The word a press at `(nx, ny)` — a fraction of the page — means, when the
+ * point is not inside any word's box. A press lands in the gap between two
+ * words, or in the leading above a line, often enough that picking the nearest
+ * word on that line is what the reader expects; a press nowhere near a line
+ * picks nothing at all.
+ */
+export const nearestOcrWord = (words, nx, ny) => {
+    let best = null
+    let bestScore = Infinity
+    for (const word of words) {
+        const dx = Math.max(word.x - nx, 0, nx - (word.x + word.w))
+        const dy = Math.max(word.y - ny, 0, ny - (word.y + word.h))
+        // Stay on the line whose leading the press is in (0.75 of a line either
+        // way), and within a fifth of a word's width sideways.
+        if (dy > word.h * 0.75) continue
+        if (dx > Math.max(word.w * 0.5, 0.01)) continue
+        const score = dy * 2 + dx
+        if (score < bestScore) {
+            bestScore = score
+            best = word
+        }
+    }
+    return best
+}
+
+/**
  * Put a page's words back: from memory, or from the app (which keeps them per
  * book and page). Answers whether the page ended up with text, and tells the
  * page's own document about it, so the reader can draw what was waiting on it.

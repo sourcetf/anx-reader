@@ -680,6 +680,101 @@ const run = async () => {
   ok(!!zoomPayload?.cfi && zoomPayload.cfi === ocrPayload.cfi,
     `and its CFI does not move with the zoom (${String(zoomPayload?.cfi).slice(0, 40)})`)
 
+  // A press does not always land inside a word's box: between two words, or in
+  // the leading above a line, it lands in a gap. It must still mean the word the
+  // reader aimed at — the nearest one on that line — and never a word on another.
+  const betweenWords = await scanPage.evaluate(() => {
+    const doc = window.reader.view.renderer.getContents()
+      .find(c => c.doc?.querySelector('#canvas > canvas')).doc
+    const spans = Array.from(doc.querySelectorAll('.textLayer span[data-ocr-word]'))
+    const [first, second] = [spans[0], spans[1]]
+    const a = first.getBoundingClientRect()
+    const b = second.getBoundingClientRect()
+    const canvas = doc.querySelector('#canvas > canvas').getBoundingClientRect()
+    // The middle of the gap between the two words, a little above their baseline
+    // so the point is outside both boxes.
+    return {
+      first: first.textContent, second: second.textContent,
+      point: { x: (a.right + b.left) / 2, y: a.top - 1 },
+      canvas: { w: canvas.width, h: canvas.height },
+    }
+  })
+  const pressGapPoint = async () => {
+    await scanPage.evaluate((point) => {
+      const doc = window.reader.view.renderer.getContents()
+        .find(c => c.doc?.querySelector('#canvas > canvas')).doc
+      const canvas = doc.querySelector('#canvas > canvas')
+      const box = canvas.getBoundingClientRect()
+      const x = box.left + point.x
+      const y = box.top + point.y
+      const view = doc.defaultView
+      const target = doc.elementFromPoint(x, y) ?? canvas
+      const touch = new view.Touch({ identifier: 1, target, clientX: x, clientY: y,
+        screenX: x, screenY: y, pageX: x, pageY: y, radiusX: 10, radiusY: 10, force: 1 })
+      const make = type => new view.TouchEvent(type, {
+        bubbles: true, cancelable: true, composed: true,
+        touches: type === 'touchend' ? [] : [touch], targetTouches: type === 'touchend' ? [] : [touch],
+        changedTouches: [touch],
+      })
+      target.dispatchEvent(make('touchstart'))
+      window.__releaseGap = () => target.dispatchEvent(make('touchend'))
+    }, betweenWords.point)
+    await scanPage.waitForTimeout(600)
+    await scanPage.evaluate(() => window.__releaseGap())
+    await scanPage.waitForTimeout(1200)
+    return scanPage.evaluate(() => {
+      const doc = window.reader.view.renderer.getContents()
+        .find(c => c.doc?.querySelector('#canvas > canvas')).doc
+      return doc.getSelection()?.toString?.() ?? ''
+    })
+  }
+  const gapSelection = await pressGapPoint()
+  ok(gapSelection === betweenWords.first || gapSelection === betweenWords.second,
+    `a press in the gap between two words picks one of them (“${gapSelection}”, between “${betweenWords.first}” and “${betweenWords.second}”)`)
+
+  // A drag that starts on a live selection is adjusting it: the page must not
+  // turn out from under the finger.
+  const handleDrag = await scanPage.evaluate(async () => {
+    const view = window.reader.view
+    const doc = view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas')).doc
+    const span = doc.querySelector('.textLayer span[data-ocr-word]')
+    const range = doc.createRange()
+    range.setStart(span.firstChild, 0)
+    range.setEnd(span.firstChild, span.firstChild.data.length)
+    const selection = doc.defaultView.getSelection()
+    selection.removeAllRanges()
+    selection.addRange(range)
+    const rect = span.getBoundingClientRect()
+    const startPage = view.renderer.index
+    // From the right edge of the selection, well to the right of it: exactly the
+    // gesture that used to be read as a page turn.
+    const canvas = doc.querySelector('#canvas > canvas')
+    const box = canvas.getBoundingClientRect()
+    const startX = box.left + rect.right + 4
+    const y = box.top + rect.top + rect.height / 2
+    const target = doc.elementFromPoint(startX, y) ?? canvas
+    const touch = (x) => new doc.defaultView.Touch({ identifier: 1, target, clientX: x, clientY: y,
+      screenX: x, screenY: y, pageX: x, pageY: y, radiusX: 10, radiusY: 10, force: 1 })
+    const make = (type, x) => new doc.defaultView.TouchEvent(type, {
+      bubbles: true, cancelable: true, composed: true,
+      touches: type === 'touchend' ? [] : [touch(x)],
+      targetTouches: type === 'touchend' ? [] : [touch(x)],
+      changedTouches: [touch(x)],
+    })
+    target.dispatchEvent(make('touchstart', startX))
+    for (const step of [20, 40, 60, 80, 100]) {
+      target.dispatchEvent(make('touchmove', startX + step))
+      await new Promise(r => setTimeout(r, 60))
+    }
+    target.dispatchEvent(make('touchend', startX + 100))
+    await new Promise(r => setTimeout(r, 800))
+    return { startPage, endPage: view.renderer.index, selection: doc.getSelection()?.toString?.() ?? '' }
+  })
+  ok(handleDrag.endPage === handleDrag.startPage,
+    `dragging from a selection does not turn the page (${handleDrag.startPage} → ${handleDrag.endPage})`)
+  ok(handleDrag.selection.includes(betweenWords.first),
+    `and the selection survives the drag (“${handleDrag.selection}”)`)
+
   // A page whose OCR yields nothing must say so instead of failing silently.
   await scanPage.evaluate(() => {
     window.__ocrAnswer = { ok: false, reason: 'no text found' }

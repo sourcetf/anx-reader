@@ -8,7 +8,7 @@ import { getSelectionText, getPdfTextLayer } from './pdf-text.js'
 import { collapse, compare, fromRange, toRange } from './epubcfi.js'
 import {
   ocrPage, restoreOcrWords, pageHasOwnText, injectOcrTextLayer,
-  pageTextLayer, OCR_HOLD_MS, OCR_DRIFT_PX,
+  nearestOcrWord, pageTextLayer, OCR_HOLD_MS, OCR_DRIFT_PX,
 } from './ocr-layer.js'
 import { HAN_GLOBAL, codePointMap, truncate } from './unicode.js'
 const { configure, ZipReader, BlobReader, TextWriter, BlobWriter } =
@@ -1543,14 +1543,23 @@ class Reader {
   #onTouchStart = ({ detail: e }) => {
     if (this.#ignoreTouch()) return;
     const pressTouch = e.touch ?? {}
-    this.#pressStart = {
+    // A touch on a fixed-layout page is delivered by that page's own document,
+    // so this is the document the coordinates above belong to — and the element
+    // it landed on, which for a page whose words are already there is the very
+    // span the finger is over.
+    const pressDoc = pressTouch.target?.ownerDocument ?? null
+    const press = {
       x: pressTouch.clientX ?? pressTouch.screenX ?? 0,
       y: pressTouch.clientY ?? pressTouch.screenY ?? 0,
       time: Date.now(),
-      // A touch on a fixed-layout page is delivered by that page's own
-      // document, so this is the document the coordinates above belong to.
-      doc: pressTouch.target?.ownerDocument ?? null,
-    };
+      doc: pressDoc,
+      target: pressTouch.target ?? null,
+      selection: false,
+    }
+    // A live selection owns the gesture: the finger is on a handle, extending
+    // or shrinking the selection, and must not turn the page out from under it.
+    press.selection = this.#touchStartsInSelection(pressDoc, press)
+    this.#pressStart = press;
 
     this.#bookMarkExists = !!document.getElementById('bookmark-icon');
     this.#upTriggered = false;
@@ -1563,9 +1572,22 @@ class Reader {
     this.#ignoreBookmarkGesture = startY < screenHeight * 0.1;
   }
 
+  // Whether a touch started inside (or within handle reach of) a selection that
+  // is already there. A handle sits just outside the range's own boxes, so the
+  // test is on the boxes grown by a handle's width.
+  #touchStartsInSelection = (doc, point, slack = 24) => {
+    const owner = doc ?? this.view?.renderer?.getContents?.()?.[0]?.doc
+    const selection = owner?.getSelection?.()
+    if (!selection?.rangeCount || !selection.toString()) return false
+    if (!point) return false
+    const rects = Array.from(selection.getRangeAt(0).getClientRects())
+    return rects.some(r => point.x >= r.left - slack && point.x <= r.right + slack
+      && point.y >= r.top - slack && point.y <= r.bottom + slack)
+  }
+
   // OCR the page under a point, then select the word that sits there. The
   // injected text layer makes the page behave like any other from here on.
-  #ocrAt = async (x, y, sourceDoc = null) => {
+  #ocrAt = async (x, y, sourceDoc = null, target = null) => {
     const contents = this.view?.renderer?.getContents?.() ?? []
     // A press is delivered by the page's own document, so x/y are that page's
     // client coordinates; a press with no source document is matched to a frame
@@ -1589,14 +1611,25 @@ class Reader {
       language: this.view?.book?.metadata?.language,
     })
     if (!words || !injectOcrTextLayer(doc, words)) return
-    const box = canvas.getBoundingClientRect()
-    if (!box.width || !box.height) return
-    const nx = (x - box.left) / box.width
-    const ny = (y - box.top) / box.height
-    const inside = words.find(w =>
-      nx >= w.x && nx <= w.x + w.w && ny >= w.y && ny <= w.y + w.h)
-    if (!inside) return
-    const index = words.indexOf(inside)
+    // The word under the finger, in order of how directly it is known: the span
+    // the touch landed on (exact, and what a page whose words are already there
+    // always gives), then the box the point falls in, then the nearest word on
+    // that line — a press in the gap between two words still means the word the
+    // reader aimed at.
+    let index = -1
+    const touched = target?.closest?.('span[data-ocr-word]')
+    if (touched && doc.contains(touched)) index = Number(touched.dataset.ocrWord)
+    if (!(index >= 0)) {
+      const box = canvas.getBoundingClientRect()
+      if (!box.width || !box.height) return
+      const nx = (x - box.left) / box.width
+      const ny = (y - box.top) / box.height
+      const inside = words.find(w =>
+        nx >= w.x && nx <= w.x + w.w && ny >= w.y && ny <= w.y + w.h)
+        ?? nearestOcrWord(words, nx, ny)
+      if (!inside) return
+      index = words.indexOf(inside)
+    }
     const span = pageTextLayer(doc)?.querySelector(`[data-ocr-word="${index}"]`)
     if (!span) return
     const range = doc.createRange()
@@ -1619,6 +1652,9 @@ class Reader {
 
   #onTouchMove = ({ detail: e }) => {
     if (this.#ignoreTouch()) return;
+    // A finger dragging a selection handle is not asking for the bookmark
+    // pull-down (a handle can be dragged vertically as well as along the line).
+    if (this.#pressStart?.selection) return;
 
     const mainView = this.view.shadowRoot.children[0]
     if (e.touchState.direction === 'vertical') {
@@ -1649,7 +1685,7 @@ class Reader {
       const dx = Math.abs(e.touchState?.delta?.x ?? 0)
       const dy = Math.abs(e.touchState?.delta?.y ?? 0)
       if (Date.now() - press.time > OCR_HOLD_MS && dx < OCR_DRIFT_PX && dy < OCR_DRIFT_PX) {
-        this.#ocrAt(press.x, press.y, press.doc)
+        this.#ocrAt(press.x, press.y, press.doc, press.target)
         return
       }
     }
@@ -1657,7 +1693,10 @@ class Reader {
     // swipe is turned into a page turn here, in the app layer (readest does the
     // same in its reader): the renderer only reports the gesture. A reflowable
     // book pages by its paginator scrolling under the finger, so it is left alone.
-    if (this.view?.isFixedLayout && !this.#ignoreTouch()) {
+    // A selection that was already on the page owns this gesture: the finger is
+    // on a handle, extending or shrinking the selection, and must not turn the
+    // page out from under it.
+    if (this.view?.isFixedLayout && !this.#ignoreTouch() && !press?.selection) {
       const { direction, delta } = e.touchState ?? {}
       const dx = delta?.x ?? 0
       const SWIPE_TURN_THRESHOLD = 60
