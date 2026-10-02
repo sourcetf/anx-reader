@@ -13,6 +13,10 @@ import {
   ocrHandleAt, dragOcrSelectionHandle, ocrHandleAnchor, sectionIndexOfDoc,
 } from './ocr-layer.js'
 import { HAN_GLOBAL, codePointMap, truncate } from './unicode.js'
+
+// How far a finger has to travel from a selection grip before the touch counts
+// as a drag rather than a tap on the grip.
+const HANDLE_DRAG_PX = 8
 const { configure, ZipReader, BlobReader, TextWriter, BlobWriter } =
   await import('./vendor/zip.js')
 const { EPUB } = await import('./epub.js')
@@ -1644,9 +1648,13 @@ class Reader {
     if (handleDrag) {
       const press = this.#pressStart
       const touch = e.touch ?? {}
+      const x = touch.clientX ?? press.x
+      const y = touch.clientY ?? press.y
+      // A finger resting on a grip still reports moves at the same point, so
+      // what makes a drag a drag is how far it went, not that it moved.
+      if (Math.hypot(x - press.x, y - press.y) > HANDLE_DRAG_PX) press.moved = true
       e.preventDefault?.()
-      dragOcrSelectionHandle(press.doc, handleDrag,
-        touch.clientX ?? press.x, touch.clientY ?? press.y, press.anchor)
+      dragOcrSelectionHandle(press.doc, handleDrag, x, y, press.anchor)
       return
     }
     if (this.#ignoreTouch()) return;
@@ -1677,12 +1685,22 @@ class Reader {
     // ended up being, so a highlight is made over the range the reader arrived
     // at rather than the one they started from.
     if (press?.handle) {
+      const touch = e.touch ?? {}
+      const x = touch.clientX ?? press.x
+      const y = touch.clientY ?? press.y
+      if (Math.hypot(x - press.x, y - press.y) > HANDLE_DRAG_PX) press.moved = true
+      // A finger that lands on a grip and stays there was not asking to change
+      // anything: the range it would settle on is the one the grips are already
+      // showing, and re-applying it would swap the word under the reader for its
+      // neighbour. Only a drag that actually moved reports a new range.
+      if (!press.moved) {
+        showOcrSelectionHandles(press.doc)
+        return
+      }
       // The page's own selection gets the last word in before the finger goes,
       // so the range is applied once more from the anchor and then reported:
       // a highlight is made over the range the reader arrived at.
-      const touch = e.touch ?? {}
-      dragOcrSelectionHandle(press.doc, press.handle,
-        touch.clientX ?? press.x, touch.clientY ?? press.y, press.anchor)
+      dragOcrSelectionHandle(press.doc, press.handle, x, y, press.anchor)
       const index = sectionIndexOfDoc(press.doc)
       if (index != null) handleSelection(this.view, press.doc, index)
       return

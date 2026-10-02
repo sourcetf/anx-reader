@@ -863,6 +863,36 @@ const run = async () => {
   ok(handles.length === 2 && handles.every(h => h.w > 0),
     `a selection on a recognised page has two handles (${handles.map(h => h.side).join(', ') || 'none'})`)
 
+  // A finger that comes down on a grip and stays there — a long press, which
+  // still reports moves at the same point — is not asking to resize anything.
+  const tapped = await scanPage.evaluate(async () => {
+    const doc = window.reader.view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas')).doc
+    const canvas = doc.querySelector('#canvas > canvas')
+    const h = doc.querySelector('.anx-handles .anx-handle[data-anx-handle="end"]')
+      .getBoundingClientRect()
+    const at = { x: h.left + h.width / 2, y: h.top + h.height / 2 }
+    const before = doc.getSelection()?.toString() ?? ''
+    const el = doc.elementFromPoint(at.x, at.y) ?? canvas
+    const make = (type, p) => {
+      const touch = new doc.defaultView.Touch({ identifier: 1, target: el,
+        clientX: p.x, clientY: p.y, screenX: p.x, screenY: p.y,
+        pageX: p.x, pageY: p.y, radiusX: 10, radiusY: 10, force: 1 })
+      return new doc.defaultView.TouchEvent(type, { bubbles: true, cancelable: true,
+        composed: true, touches: type === 'touchend' ? [] : [touch],
+        targetTouches: type === 'touchend' ? [] : [touch], changedTouches: [touch] })
+    }
+    el.dispatchEvent(make('touchstart', at))
+    for (let i = 0; i < 6; i++) {
+      el.dispatchEvent(make('touchmove', at))
+      await new Promise(r => setTimeout(r, 60))
+    }
+    el.dispatchEvent(make('touchend', at))
+    await new Promise(r => setTimeout(r, 500))
+    return { before, after: doc.getSelection()?.toString() ?? '' }
+  })
+  ok(tapped.after === tapped.before && tapped.after !== '',
+    `a long press on a grip does not resize the selection (“${tapped.after}”)`)
+
   // Drag the end handle onto a later word: the selection grows to reach it.
   const grown = await scanPage.evaluate(async () => {
     const view = window.reader.view
