@@ -555,7 +555,12 @@ const run = async () => {
     await scanPage.evaluate(() => window.__pressRelease())
   }
 
-  await pressAt(0.25, 0.20)
+  // The first press on a page is the one the reader owns — it is what makes the
+  // page readable, and from then on the WebView's own long press does the
+  // selecting. So this press carries everything a press has to get right: the
+  // hold, the request, the layer that comes back, and the word it selects, which
+  // is the astral one because that is the word that has to survive whole.
+  await pressAt(0.25, 0.625)             // the astral word
   await scanPage.waitForTimeout(1500)
   const ocr = await scanPage.evaluate(() => {
     const view = window.reader.view
@@ -581,9 +586,13 @@ const run = async () => {
   ok(ocr.first === words[0].text, `the layer holds the recognised words (“${ocr.first}”)`)
   ok(Math.abs((ocr.firstBox?.width ?? 0) - scanned.box.w * words[0].w) < 2,
     `a word is laid out where the image says (${ocr.firstBox?.width?.toFixed(1)}px wide)`)
-  ok(ocr.selected === words[0].text, `the press selected the word under it (“${ocr.selected}”)`)
-  ok(ocrPayload?.text === words[0].text,
+  ok(ocr.selected === ASTRAL_WORD,
+    `the press selected the word under it (“${ocr.selected}”)`)
+  ok(ocrPayload?.text === ASTRAL_WORD,
     `and the selection reached Dart (“${ocrPayload?.text}”)`)
+  ok(!/[\uD800-\uDBFF]$/.test(ocrPayload?.text ?? '')
+    && !/^[\uDC00-\uDFFF]/.test(ocrPayload?.text ?? ''),
+    'with no half of a surrogate pair anywhere in it')
   ok(String(ocrPayload?.cfi ?? '').startsWith('epubcfi'),
     `with a CFI (${String(ocrPayload?.cfi).slice(0, 40)})`)
   ok(ocrPayload?.fixedLayout === true && ocrPayload?.footnote === false,
@@ -595,27 +604,15 @@ const run = async () => {
   // the page, which survives a re-render at another zoom.
   // A word made of astral characters has to survive the whole path: the layer,
   // the selection, the CFI and the payload the app stores.
-  await pressAt(0.27, 0.625)
-  await scanPage.waitForTimeout(1500)
   const astral = await scanPage.evaluate(() => {
     const renderer = window.reader.view.renderer
     const doc = (renderer.getContents().find(c => c.index === renderer.index)
       ?? renderer.getContents()[0]).doc
     const span = doc.querySelector('.textLayer span[data-ocr-word="2"]')
-    return {
-      text: span?.textContent ?? null,
-      units: span?.textContent?.length ?? 0,
-      selected: doc.getSelection()?.toString?.() ?? '',
-    }
+    return { text: span?.textContent ?? null, units: span?.textContent?.length ?? 0 }
   })
-  const astralPayload = await lastCall(scanPage, 'onSelectionEnd')
   ok(astral.text === ASTRAL_WORD,
     `a Unicode 17 ideograph word is laid out whole (${astral.units} UTF-16 units for 2 ideographs)`)
-  ok(astral.selected === ASTRAL_WORD, `and selected whole (“${astral.selected}”)`)
-  ok(astralPayload?.text === ASTRAL_WORD, 'and reaches the app whole')
-  ok(!/[\uD800-\uDBFF]$/.test(astralPayload?.text ?? '')
-    && !/^[\uDC00-\uDFFF]/.test(astralPayload?.text ?? ''),
-    'with no half of a surrogate pair anywhere in it')
   await scanPage.screenshot({ path: join(SHOTS, '13-ocr-astral.png') })
 
   // A reading rule that rewrites text (simplified to traditional) must leave a
@@ -648,105 +645,41 @@ const run = async () => {
   ok(saved?.words?.[0]?.text === words[0].text, `carrying the text (“${saved?.words?.[0]?.text}”)`)
 
   // A zoom re-renders the page and clears the text layer with the bitmap. The
-  // words are kept per page, so the next press rebuilds the layer without asking
-  // the app again — and, since the boxes are fractions of the page, the same word
-  // yields the same CFI at any zoom (a highlight made at one zoom has to resolve
-  // at another).
-  await scanPage.evaluate(async () => {
-    window.changeStyle({ pdfZoomMode: 'fit-width', pdfZoomLevel: 200 })
-    await new Promise(resolve => setTimeout(resolve, 1800))
-  })
-  const afterZoom = await scanPage.evaluate(() => {
+  // words are kept per page, so the layer is rebuilt from memory without asking
+  // the app again, and — the boxes being fractions of the page — the words land
+  // on the same part of the bitmap. That is what keeps a word's CFI still, and
+  // so what lets a highlight made at one zoom resolve at another.
+  const fractionsAt = () => scanPage.evaluate(() => {
     const renderer = window.reader.view.renderer
     const doc = (renderer.getContents().find(c => c.index === renderer.index)
       ?? renderer.getContents()[0]).doc
     const canvas = doc.querySelector('#canvas > canvas')
-    const spans = Array.from(doc.querySelectorAll('.textLayer span[data-ocr-word]'))
+    const box = canvas.getBoundingClientRect()
     return {
       canvasWidth: canvas.width,
-      spans: spans.length,
-      width: spans[0]?.getBoundingClientRect?.().width ?? 0,
+      words: Array.from(doc.querySelectorAll('.textLayer span[data-ocr-word]')).map(span => {
+        const r = span.getBoundingClientRect()
+        return [span.textContent,
+          +((r.left + r.width / 2 - box.left) / box.width).toFixed(4),
+          +((r.top + r.height / 2 - box.top) / box.height).toFixed(4)]
+      }),
     }
   })
-  ok(afterZoom.canvasWidth > scanned.box.w, `the zoom re-rasterised the bitmap (${afterZoom.canvasWidth}px)`)
-  ok(afterZoom.spans === words.length,
-    `and the page is re-rendered with its words (${afterZoom.spans} spans)`)
-  ok(afterZoom.width > ocr.firstBox.width,
-    `laid out for the new page size (${ocr.firstBox.width.toFixed(1)} → ${afterZoom.width.toFixed(1)}px)`)
-
-  await pressAt(0.25, 0.20)
-  await scanPage.waitForTimeout(1500)
-  const rebuilt = await scanPage.evaluate(() => {
-    const renderer = window.reader.view.renderer
-    const doc = (renderer.getContents().find(c => c.index === renderer.index)
-      ?? renderer.getContents()[0]).doc
-    return {
-      requests: window.__ocrRequests,
-      spans: doc.querySelectorAll('.textLayer span[data-ocr-word]').length,
-      selected: doc.getSelection()?.toString?.() ?? '',
-    }
+  const beforeZoom = await fractionsAt()
+  await scanPage.evaluate(async () => {
+    window.changeStyle({ pdfZoomMode: 'fit-width', pdfZoomLevel: 200 })
+    await new Promise(resolve => setTimeout(resolve, 1800))
   })
-  const zoomPayload = await lastCall(scanPage, 'onSelectionEnd')
-  ok(rebuilt.requests === 1, `the words are remembered, not recognised twice (${rebuilt.requests} request)`)
-  ok(rebuilt.spans === words.length, `they are still there for the press (${rebuilt.spans} spans)`)
-  ok(rebuilt.selected === words[0].text, `the same word is under the same point (“${rebuilt.selected}”)`)
-  ok(!!zoomPayload?.cfi && zoomPayload.cfi === ocrPayload.cfi,
-    `and its CFI does not move with the zoom (${String(zoomPayload?.cfi).slice(0, 40)})`)
-
-  // A press does not always land inside a word's box: between two words, or in
-  // the leading above a line, it lands in a gap. It must still mean the word the
-  // reader aimed at — the nearest one on that line — and never a word on another.
-  const betweenWords = await scanPage.evaluate(() => {
-    const renderer = window.reader.view.renderer
-    const doc = (renderer.getContents().find(c => c.index === renderer.index)
-      ?? renderer.getContents()[0]).doc
-    const spans = Array.from(doc.querySelectorAll('.textLayer span[data-ocr-word]'))
-    const [first, second] = [spans[0], spans[1]]
-    const a = first.getBoundingClientRect()
-    const b = second.getBoundingClientRect()
-    const canvas = doc.querySelector('#canvas > canvas').getBoundingClientRect()
-    // The middle of the gap between the two words, a little above their baseline
-    // so the point is outside both boxes.
-    return {
-      first: first.textContent, second: second.textContent,
-      point: { x: (a.right + b.left) / 2, y: a.top - 1 },
-      canvas: { w: canvas.width, h: canvas.height },
-    }
-  })
-  const pressGapPoint = async () => {
-    await scanPage.evaluate((point) => {
-      const renderer = window.reader.view.renderer
-    const doc = (renderer.getContents().find(c => c.index === renderer.index)
-      ?? renderer.getContents()[0]).doc
-      const canvas = doc.querySelector('#canvas > canvas')
-      const box = canvas.getBoundingClientRect()
-      const x = box.left + point.x
-      const y = box.top + point.y
-      const view = doc.defaultView
-      const target = doc.elementFromPoint(x, y) ?? canvas
-      const touch = new view.Touch({ identifier: 1, target, clientX: x, clientY: y,
-        screenX: x, screenY: y, pageX: x, pageY: y, radiusX: 10, radiusY: 10, force: 1 })
-      const make = type => new view.TouchEvent(type, {
-        bubbles: true, cancelable: true, composed: true,
-        touches: type === 'touchend' ? [] : [touch], targetTouches: type === 'touchend' ? [] : [touch],
-        changedTouches: [touch],
-      })
-      target.dispatchEvent(make('touchstart'))
-      window.__releaseGap = () => target.dispatchEvent(make('touchend'))
-    }, betweenWords.point)
-    await scanPage.waitForTimeout(600)
-    await scanPage.evaluate(() => window.__releaseGap())
-    await scanPage.waitForTimeout(1200)
-    return scanPage.evaluate(() => {
-      const renderer = window.reader.view.renderer
-    const doc = (renderer.getContents().find(c => c.index === renderer.index)
-      ?? renderer.getContents()[0]).doc
-      return doc.getSelection()?.toString?.() ?? ''
-    })
-  }
-  const gapSelection = await pressGapPoint()
-  ok(gapSelection === betweenWords.first || gapSelection === betweenWords.second,
-    `a press in the gap between two words picks one of them (“${gapSelection}”, between “${betweenWords.first}” and “${betweenWords.second}”)`)
+  const afterZoom = await fractionsAt()
+  ok(afterZoom.canvasWidth > beforeZoom.canvasWidth,
+    `the zoom re-rasterised the bitmap (${beforeZoom.canvasWidth} → ${afterZoom.canvasWidth}px)`)
+  ok(afterZoom.words.length === words.length,
+    `and the page is re-rendered with its words (${afterZoom.words.length} spans)`)
+  const requests = await scanPage.evaluate(() => window.__ocrRequests)
+  ok(requests === 1, `the words are remembered, not recognised twice (${requests} request)`)
+  ok(JSON.stringify(afterZoom.words) === JSON.stringify(beforeZoom.words),
+    `and sit on the same part of the page at the new zoom (${afterZoom.words.length} words)`)
+  await scanPage.screenshot({ path: join(SHOTS, '13-ocr-zoom.png') })
 
   // A drag that starts on a live selection is adjusting it: the page must not
   // turn out from under the finger.
@@ -788,15 +721,16 @@ const run = async () => {
   })
   ok(handleDrag.endPage === handleDrag.startPage,
     `dragging from a selection does not turn the page (${handleDrag.startPage} → ${handleDrag.endPage})`)
-  ok(handleDrag.selection.includes(betweenWords.first),
+  ok(handleDrag.selection.includes(words[0].text),
     `and the selection survives the drag (“${handleDrag.selection}”)`)
 
   // A page of the kind a book actually has: a line of display text, a drawing
   // that OCR reads bits of lettering out of, then ordinary body text. The
   // display line and the drawing's words are several times the height of a body
-  // word, and a press on the body must still be answered with the body. It runs
-  // on a page not recognised yet: a page's words are kept once read, so this
-  // answer has to be the one that page is read with.
+  // word, and the press is on the body: the reported case. It runs on a page not
+  // recognised yet, because a page is read once — the first press is the one the
+  // reader owns, and what every other line of this page answers is the reader's
+  // own rule, tested where it lives, in ocr.test.mjs.
   const illustrated = [
     { text: 'WONDERLAND', x: 0.08, y: 0.05, w: 0.62, h: 0.05 },
     { text: 'XXX', x: 0.16, y: 0.48, w: 0.20, h: 0.058 },
@@ -820,171 +754,49 @@ const run = async () => {
     return doc.getSelection()?.toString?.() ?? ''
   })
   ok(illustratedPage > 0 && onBody === 'was',
-    `a press on body text selects the body word (“${onBody}”, page ${illustratedPage})`)
+    `a press on body text under a drawing selects the body word (“${onBody}”, page ${illustratedPage})`)
 
-  // The other lines answer for themselves: a press inside the drawing gets the
-  // drawing's own word, one in the gap between two body words gets a body word,
-  // and one on the display line gets the display line — the size of the words
-  // around a press must not decide which line it belongs to.
-  const byLine = {}
-  for (const [name, nx, ny] of [
-    ['drawing', 0.25, 0.50],
-    ['body gap', 0.205, 0.609],
-    ['display', 0.35, 0.07],
-  ]) {
-    await pressAt(nx, ny)
-    await scanPage.waitForTimeout(1200)
-    byLine[name] = await scanPage.evaluate(() => {
-      const renderer = window.reader.view.renderer
-      const doc = (renderer.getContents().find(c => c.index === renderer.index)
-        ?? renderer.getContents()[0]).doc
-      return doc.getSelection()?.toString?.() ?? ''
-    })
-  }
-  ok(byLine.drawing === 'XXX', `a press inside the drawing gets its own word (“${byLine.drawing}”)`)
-  ok(byLine['body gap'] === 'Alice' || byLine['body gap'] === 'was',
-    `a press between two body words gets a body word (“${byLine['body gap']}”)`)
-  ok(byLine.display === 'WONDERLAND', `a press on the display line gets that line (“${byLine.display}”)`)
-
-  // Back to a body word: that is the selection the grips below adjust.
-  await pressAt(0.245, 0.609)
-  await scanPage.waitForTimeout(1200)
-
-  // The two grips of the selection: the WebView draws the selection itself but
-  // gives a selection made in script nothing to drag, so the reader draws its
-  // own and a finger on one of them adjusts the range.
-  const handles = await scanPage.evaluate(() => {
+  // A page that already carries its words is left to the WebView. Its own long
+  // press is what selects there — with the grips it draws itself, the same
+  // machinery a page of ordinary text uses — and the reader must keep out of
+  // it: a selection made in script is one the WebView puts no grips on, and
+  // stepping in here is what used to take the grips away.
+  const handedOff = await scanPage.evaluate(async () => {
     const renderer = window.reader.view.renderer
     const doc = (renderer.getContents().find(c => c.index === renderer.index)
       ?? renderer.getContents()[0]).doc
-    const drawn = Array.from(doc.querySelectorAll('.anx-handles .anx-handle'))
-    return drawn.map(h => ({ side: h.dataset.anxHandle, w: h.getBoundingClientRect().width }))
-  })
-  ok(handles.length === 2 && handles.every(h => h.w > 0),
-    `a selection on a recognised page has two handles (${handles.map(h => h.side).join(', ') || 'none'})`)
-
-  // A finger that comes down on a grip and stays there — a long press, which
-  // still reports moves at the same point — is not asking to resize anything.
-  // The press lands inside the gap the grip reaches into, and nearer the next
-  // word than the one held: had those moves been applied, the word would have
-  // been swallowed and the range would have swallowed the next one instead.
-  const tapped = await scanPage.evaluate(async () => {
-    const doc = window.reader.view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas')).doc
-    const rect = sel => doc.querySelector(sel).getBoundingClientRect()
-    const grip = rect('.anx-handles .anx-handle[data-anx-handle="end"]')
-    const was = rect('.textLayer span[data-ocr-word="3"]')
-    const next = rect('.textLayer span[data-ocr-word="4"]')
-    const at = { x: was.right + (next.left - was.right) * 0.75, y: grip.top + grip.height / 2 }
-    const onGrip = Math.abs(at.x - (grip.left + grip.width / 2)) <= 24
     const before = doc.getSelection()?.toString() ?? ''
-    const el = doc.elementFromPoint(at.x, at.y) ?? doc.querySelector('#canvas > canvas')
-    const make = (type, p) => {
-      const touch = new doc.defaultView.Touch({ identifier: 1, target: el,
-        clientX: p.x, clientY: p.y, screenX: p.x, screenY: p.y,
-        pageX: p.x, pageY: p.y, radiusX: 10, radiusY: 10, force: 1 })
-      return new doc.defaultView.TouchEvent(type, { bubbles: true, cancelable: true,
-        composed: true, touches: type === 'touchend' ? [] : [touch],
-        targetTouches: type === 'touchend' ? [] : [touch], changedTouches: [touch] })
-    }
-    el.dispatchEvent(make('touchstart', at))
-    for (let i = 0; i < 6; i++) {
-      el.dispatchEvent(make('touchmove', at))
-      await new Promise(r => setTimeout(r, 60))
-    }
-    el.dispatchEvent(make('touchend', at))
-    await new Promise(r => setTimeout(r, 500))
-    return { onGrip, before, after: doc.getSelection()?.toString() ?? '' }
-  })
-  ok(tapped.onGrip, `the press below lands on the grip (${tapped.onGrip})`)
-  ok(tapped.after === tapped.before && tapped.after !== '',
-    `a long press on a grip does not resize the selection (“${tapped.after}”)`)
-
-  // Drag the end handle onto a later word: the selection grows to reach it.
-  const grown = await scanPage.evaluate(async () => {
-    const view = window.reader.view
-    const doc = view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas')).doc
+    const callsBefore = window.__calls.filter(c => c.name === 'onSelectionEnd').length
     const canvas = doc.querySelector('#canvas > canvas')
     const box = canvas.getBoundingClientRect()
-    const word = doc.querySelector('.textLayer span[data-ocr-word="4"]').getBoundingClientRect()
-    const endHandle = doc.querySelector('.anx-handles .anx-handle[data-anx-handle="end"]')
-    const h = endHandle.getBoundingClientRect()
-    const from = { x: h.left + h.width / 2, y: h.top + h.height / 2 }
-    const to = { x: box.x + word.x + word.width / 2, y: box.y + word.y + word.height / 2 }
-    const startPage = view.renderer.index
-    const el = doc.elementFromPoint(from.x, from.y) ?? canvas
-    const make = (type, p) => {
-      const touch = new doc.defaultView.Touch({ identifier: 1, target: el,
-        clientX: p.x, clientY: p.y, screenX: p.x, screenY: p.y,
-        pageX: p.x, pageY: p.y, radiusX: 10, radiusY: 10, force: 1 })
-      return new doc.defaultView.TouchEvent(type, { bubbles: true, cancelable: true,
-        composed: true, touches: type === 'touchend' ? [] : [touch],
-        targetTouches: type === 'touchend' ? [] : [touch], changedTouches: [touch] })
-    }
-    el.dispatchEvent(make('touchstart', from))
-    for (let i = 1; i <= 6; i++) {
-      el.dispatchEvent(make('touchmove', {
-        x: from.x + (to.x - from.x) * i / 6, y: from.y + (to.y - from.y) * i / 6 }))
-      await new Promise(r => setTimeout(r, 60))
-    }
-    el.dispatchEvent(make('touchend', to))
+    const span = doc.querySelector('.textLayer span[data-ocr-word="2"]')   // 'Alice'
+    const word = span.getBoundingClientRect()
+    const at = { x: box.x + word.x + word.width / 2, y: box.y + word.y + word.height / 2 }
+    const el = doc.elementFromPoint(at.x, at.y) ?? canvas
+    const touch = new doc.defaultView.Touch({ identifier: 1, target: el,
+      clientX: at.x, clientY: at.y, screenX: at.x, screenY: at.y,
+      pageX: at.x, pageY: at.y, radiusX: 10, radiusY: 10, force: 1 })
+    const make = (type) => new doc.defaultView.TouchEvent(type, {
+      bubbles: true, cancelable: true, composed: true,
+      touches: type === 'touchend' ? [] : [touch],
+      targetTouches: type === 'touchend' ? [] : [touch], changedTouches: [touch] })
+    el.dispatchEvent(make('touchstart'))
     await new Promise(r => setTimeout(r, 700))
-    return { startPage, endPage: view.renderer.index,
-      selection: doc.getSelection()?.toString?.() ?? '',
-      payload: window.__calls?.filter(c => c.name === 'onSelectionEnd').pop()?.data?.text ?? null }
+    el.dispatchEvent(make('touchend'))
+    await new Promise(r => setTimeout(r, 800))
+    return { before, after: doc.getSelection()?.toString() ?? '',
+      callsBefore,
+      callsAfter: window.__calls.filter(c => c.name === 'onSelectionEnd').length,
+      grips: doc.querySelectorAll('.anx-handles, .anx-handle').length,
+      words: doc.querySelectorAll('.textLayer span[data-ocr-word]').length }
   })
-  // Each word is its own span, so a range across two words reads as the two run
-  // together: the spaces between them are ML Kit's, not in the page.
-  const acrossWasBeginning = ['was', 'beginning'].join('')
-  ok(grown.selection === acrossWasBeginning, `the end handle extends the selection (“${grown.selection}”)`)
-  ok(grown.payload === acrossWasBeginning, `and the app is told the new range (“${grown.payload}”)`)
-  ok(grown.endPage === grown.startPage,
-    `dragging a handle does not turn the page (${grown.startPage} → ${grown.endPage})`)
-
-  // Dragged back over the first word again, the range shrinks to it.
-  const shrunk = await scanPage.evaluate(async () => {
-    const view = window.reader.view
-    const doc = view.renderer.getContents().find(c => c.doc?.querySelector('#canvas > canvas')).doc
-    const canvas = doc.querySelector('#canvas > canvas')
-    const box = canvas.getBoundingClientRect()
-    const targetWord = doc.querySelector('.textLayer span[data-ocr-word="3"]')
-    const word = targetWord.getBoundingClientRect()
-    const endHandle = doc.querySelector('.anx-handles .anx-handle[data-anx-handle="end"]')
-    const h = endHandle.getBoundingClientRect()
-    const from = { x: h.left + h.width / 2, y: h.top + h.height / 2 }
-    const to = { x: box.x + word.x + word.width / 2, y: box.y + word.y + word.height / 2 }
-    const el = doc.elementFromPoint(from.x, from.y) ?? canvas
-    const make = (type, p) => {
-      const touch = new doc.defaultView.Touch({ identifier: 1, target: el,
-        clientX: p.x, clientY: p.y, screenX: p.x, screenY: p.y,
-        pageX: p.x, pageY: p.y, radiusX: 10, radiusY: 10, force: 1 })
-      return new doc.defaultView.TouchEvent(type, { bubbles: true, cancelable: true,
-        composed: true, touches: type === 'touchend' ? [] : [touch],
-        targetTouches: type === 'touchend' ? [] : [touch], changedTouches: [touch] })
-    }
-    el.dispatchEvent(make('touchstart', from))
-    for (let i = 1; i <= 6; i++) {
-      el.dispatchEvent(make('touchmove', {
-        x: from.x + (to.x - from.x) * i / 6, y: from.y + (to.y - from.y) * i / 6 }))
-      await new Promise(r => setTimeout(r, 60))
-    }
-    el.dispatchEvent(make('touchend', to))
-    await new Promise(r => setTimeout(r, 700))
-    return doc.getSelection()?.toString?.() ?? ''
-  })
-  ok(shrunk === 'was', `and dragged back it shrinks again (“${shrunk}”)`)
-
-  // A press that is not on a handle is an ordinary press: it selects the word
-  // under the finger even while the last selection's handles are still up.
-  await pressAt(0.15, 0.609)          // 'Alice'
-  await scanPage.waitForTimeout(1200)
-  const afterHandles = await scanPage.evaluate(() => {
-    const renderer = window.reader.view.renderer
-    const doc = (renderer.getContents().find(c => c.index === renderer.index)
-      ?? renderer.getContents()[0]).doc
-    return doc.getSelection()?.toString?.() ?? ''
-  })
-  ok(afterHandles === 'Alice',
-    `a press beside a selection is still a press on a word (“${afterHandles}”)`)
+  ok(handedOff.words > 0, `the page still has its words (${handedOff.words} spans)`)
+  ok(handedOff.after === handedOff.before,
+    `a press on a page that has its words leaves the selection alone (“${handedOff.after}”)`)
+  ok(handedOff.callsAfter === handedOff.callsBefore,
+    `and does not report a new selection to the app (${handedOff.callsBefore} → ${handedOff.callsAfter})`)
+  ok(handedOff.grips === 0,
+    `the reader draws no grips of its own (${handedOff.grips} drawn)`)
 
   // A page whose OCR yields nothing must say so instead of failing silently.
   await scanPage.evaluate(() => {

@@ -9,14 +9,9 @@ import { collapse, compare, fromRange, toRange } from './epubcfi.js'
 import {
   ocrPage, restoreOcrWords, pageHasOwnText, pageHasOcrText, injectOcrTextLayer,
   pageTextLayer, OCR_HOLD_MS, OCR_DRIFT_PX,
-  wordIndexAt, showOcrSelectionHandles, hideOcrSelectionHandles,
-  ocrHandleAt, dragOcrSelectionHandle, ocrHandleAnchor, sectionIndexOfDoc,
+  wordIndexAt,
 } from './ocr-layer.js'
 import { HAN_GLOBAL, codePointMap, truncate } from './unicode.js'
-
-// How far a finger has to travel from a selection grip before the touch counts
-// as a drag rather than a tap on the grip.
-const HANDLE_DRAG_PX = 8
 const { configure, ZipReader, BlobReader, TextWriter, BlobWriter } =
   await import('./vendor/zip.js')
 const { EPUB } = await import('./epub.js')
@@ -276,7 +271,6 @@ const setSelectionHandler = (view, doc, index) => {
     lastPointerUpRange = null;
     doc.__anxSelectionClearedAt = Date.now();
     doc.__anxSuppressClick = true;
-    hideOcrSelectionHandles(doc);
     stopAutoPageSession(view);
     callFlutter('onSelectionCleared');
   };
@@ -1561,18 +1555,11 @@ class Reader {
       time: Date.now(),
       doc: pressDoc,
       target: pressTouch.target ?? null,
-      handle: null,
     }
-    // A finger on one of the two grips of a recognised page's selection is
-    // extending or shrinking it, and must not turn the page out from under it.
-    press.handle = pageHasOcrText(pressDoc) ? ocrHandleAt(pressDoc, press.x, press.y) : null
-    if (press.handle) {
-      // The page's own selection would otherwise start under the finger and
-      // replace the one being dragged. The end on the other side is held still
-      // for the whole drag.
-      press.anchor = ocrHandleAnchor(pressDoc, press.handle)
-      e.preventDefault?.()
-    } else hideOcrSelectionHandles(pressDoc)
+    // A live selection owns the gesture: a finger on it is extending or
+    // shrinking it — the WebView's own grips sit in and just below the range —
+    // and must not turn the page out from under it.
+    press.selection = this.#touchStartsInSelection(pressDoc, press)
     this.#pressStart = press;
 
     this.#bookMarkExists = !!document.getElementById('bookmark-icon');
@@ -1584,6 +1571,17 @@ class Reader {
     const screenHeight = window.innerHeight;
     const startY = touch?.screenY ?? touch?.clientY ?? 0;
     this.#ignoreBookmarkGesture = startY < screenHeight * 0.1;
+  }
+
+  // Whether a touch started inside a selection that is already there. A grip
+  // sits on the range's own boxes and hangs just below them, so the test is on
+  // the boxes grown by a grip's height.
+  #touchStartsInSelection = (doc, point, slack = 24) => {
+    const selection = doc?.defaultView?.getSelection?.()
+    if (!selection?.rangeCount || !selection.toString()) return false
+    const rects = Array.from(selection.getRangeAt(0).getClientRects())
+    return rects.some(r => point.x >= r.left - slack && point.x <= r.right + slack
+      && point.y >= r.top - slack && point.y <= r.bottom + slack)
   }
 
   // OCR the page under a point, then select the word that sits there. The
@@ -1604,7 +1602,12 @@ class Reader {
       })
     }
     const doc = hit?.doc
-    if (!doc || pageHasOwnText(doc)) return
+    // A page that already carries its words — its own text layer, or the words
+    // OCR left on it — is left to the WebView: its long press selects the word
+    // under the finger and puts its own grips on the range, exactly as it does
+    // on a page of ordinary text. Only a page with no text at all is read and
+    // selected here, because there was nothing under the finger to select.
+    if (!doc || pageHasOwnText(doc) || pageHasOcrText(doc)) return
     const canvas = doc.querySelector('#canvas > canvas')
     if (!canvas) return
     const words = await ocrPage(hit.index, {
@@ -1636,29 +1639,13 @@ class Reader {
     const selection = doc.defaultView.getSelection()
     selection.removeAllRanges()
     selection.addRange(range)
-    showOcrSelectionHandles(doc)
     handleSelection(this.view, doc, hit.index)
   }
 
   #onTouchMove = ({ detail: e }) => {
-    // A finger on a selection handle is dragging the selection, not asking for
-    // the bookmark pull-down (a handle moves vertically as well as along the
-    // line), and the page stays put.
-    const handleDrag = this.#pressStart?.handle
-    if (handleDrag) {
-      const press = this.#pressStart
-      const touch = e.touch ?? {}
-      const x = touch.clientX ?? press.x
-      const y = touch.clientY ?? press.y
-      // A finger resting on a grip still reports moves at the point it started
-      // from, and the grip sits in the gap at the end of the word it holds, so
-      // that gap is answered by the next word along. What makes a drag a drag
-      // is how far the finger went, not that moves arrived.
-      if (Math.hypot(x - press.x, y - press.y) > HANDLE_DRAG_PX) press.moved = true
-      e.preventDefault?.()
-      if (press.moved) dragOcrSelectionHandle(press.doc, handleDrag, x, y, press.anchor)
-      return
-    }
+    // A finger that came down on a selection is working that selection, not
+    // asking for the bookmark pull-down.
+    if (this.#pressStart?.selection) return;
     if (this.#ignoreTouch()) return;
 
     const mainView = this.view.shadowRoot.children[0]
@@ -1683,30 +1670,6 @@ class Reader {
   #onTouchEnd = ({ detail: e }) => {
     const press = this.#pressStart
     this.#pressStart = null
-    // A drag that took hold of a selection handle: report whatever the selection
-    // ended up being, so a highlight is made over the range the reader arrived
-    // at rather than the one they started from.
-    if (press?.handle) {
-      const touch = e.touch ?? {}
-      const x = touch.clientX ?? press.x
-      const y = touch.clientY ?? press.y
-      if (Math.hypot(x - press.x, y - press.y) > HANDLE_DRAG_PX) press.moved = true
-      // A finger that lands on a grip and stays there was not asking to change
-      // anything: the range it would settle on is the one the grips are already
-      // showing, and re-applying it would swap the word under the reader for its
-      // neighbour. Only a drag that actually moved reports a new range.
-      if (!press.moved) {
-        showOcrSelectionHandles(press.doc)
-        return
-      }
-      // The page's own selection gets the last word in before the finger goes,
-      // so the range is applied once more from the anchor and then reported:
-      // a highlight is made over the range the reader arrived at.
-      dragOcrSelectionHandle(press.doc, press.handle, x, y, press.anchor)
-      const index = sectionIndexOfDoc(press.doc)
-      if (index != null) handleSelection(this.view, press.doc, index)
-      return
-    }
     // A press that neither moved nor turned into a selection on a page with no
     // text of its own is a scanned page: run it through OCR, then select the
     // word under the finger so the usual context menu opens over it.
@@ -1722,7 +1685,7 @@ class Reader {
     // swipe is turned into a page turn here, in the app layer (readest does the
     // same in its reader): the renderer only reports the gesture. A reflowable
     // book pages by its paginator scrolling under the finger, so it is left alone.
-    if (this.view?.isFixedLayout && !this.#ignoreTouch()) {
+    if (this.view?.isFixedLayout && !this.#ignoreTouch() && !press?.selection) {
       const { direction, delta } = e.touchState ?? {}
       const dx = delta?.x ?? 0
       const SWIPE_TURN_THRESHOLD = 60

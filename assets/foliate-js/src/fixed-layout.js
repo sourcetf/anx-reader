@@ -336,7 +336,7 @@ export class FixedLayout extends HTMLElement {
             axis: this.#scrollHorizontal ? 'scrollLeft' : 'scrollTop',
         }
         this.dispatchEvent(new CustomEvent('doctouchstart', {
-            detail: { touch, touchState: this.#touchState, preventDefault: () => e.preventDefault() },
+            detail: { touch, touchState: this.#touchState },
             bubbles: true,
             composed: true,
         }))
@@ -357,7 +357,6 @@ export class FixedLayout extends HTMLElement {
         }
         this.dispatchEvent(new CustomEvent('doctouchmove', {
             detail: { touch, touchState: state },
-            preventDefault: () => e.preventDefault(),
             bubbles: true,
             composed: true,
         }))
@@ -378,14 +377,10 @@ export class FixedLayout extends HTMLElement {
     #observeTouches(doc) {
         if (!doc || doc.__anxFxlTouches) return
         doc.__anxFxlTouches = true
-        // Not passive: a touch on a selection's grip has to be able to stop the
-        // page's own selection from starting under the finger, or the page's
-        // selection replaces the one the reader is dragging.
-        const opts = { passive: false }
-        doc.addEventListener('touchstart', this.#onTouchStart, opts)
-        doc.addEventListener('touchmove', this.#onTouchMove, opts)
-        doc.addEventListener('touchend', this.#onTouchEnd, opts)
-        doc.addEventListener('touchcancel', this.#onTouchEnd, opts)
+        doc.addEventListener('touchstart', this.#onTouchStart, { passive: true })
+        doc.addEventListener('touchmove', this.#onTouchMove, { passive: true })
+        doc.addEventListener('touchend', this.#onTouchEnd, { passive: true })
+        doc.addEventListener('touchcancel', this.#onTouchEnd, { passive: true })
     }
     #getScrollModePageMetrics() {
         return this.#scrollPages.map(page => ({
