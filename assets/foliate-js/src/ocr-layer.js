@@ -55,6 +55,10 @@ export const injectOcrTextLayer = (doc, words) => {
     const height = canvas.clientHeight || canvas.height
     if (!width || !height) return false
     layer.replaceChildren()
+    // The words are not laid out text: each is placed where the image has it,
+    // with nothing between them, because ML Kit reports words and not the
+    // spaces. Saying so is what lets a selection be read back as words.
+    layer.dataset.ocrLayer = 'true'
     words.forEach((word, i) => {
         const span = doc.createElement('span')
         span.textContent = word.text
@@ -120,6 +124,32 @@ export const nearestOcrWord = (words, nx, ny) => {
 /** The word spans of a recognised page, in the order they were injected. */
 const ocrWordSpans = doc =>
     Array.from(pageTextLayer(doc)?.querySelectorAll('span[data-ocr-word]') ?? [])
+
+/**
+ * What [range] says, for a selection over a recognised page: the words it
+ * covers, with a space between them.
+ *
+ * A page's words are separate spans with nothing between them — ML Kit reports
+ * the words, and the spaces between them are not in any box — so reading the
+ * range out directly gives one long word: “Alicewasbeginning”. The words are
+ * kept as they are, because it is what the word is, so the spaces are put back
+ * here, where the text is read for the reader rather than for the page.
+ */
+export const ocrSelectionText = (layer, range) => {
+    let out = ''
+    for (const span of layer.querySelectorAll('span[data-ocr-word]')) {
+        if (!range.intersectsNode(span)) continue
+        const text = span.firstChild
+        if (!text) continue
+        const start = text === range.startContainer ? range.startOffset : 0
+        const end = text === range.endContainer ? range.endOffset : text.data.length
+        const piece = text.data.slice(start, end)
+        if (!piece) continue
+        if (out && !/\s$/.test(out)) out += ' '
+        out += piece
+    }
+    return out
+}
 
 /**
  * The word a touch at `(x, y)` — the page's own client coordinates — means, as

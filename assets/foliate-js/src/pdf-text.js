@@ -1,4 +1,5 @@
 import { NO_SPACE_SCRIPT } from './unicode.js'
+import { ocrSelectionText } from './ocr-layer.js'
 
 /**
  * Reassembles paragraphs from a pdf.js text layer.
@@ -243,12 +244,14 @@ export const getPdfTextFromRange = (range, textLayer) => {
 /**
  * A selection's text: for a selection inside a PDF text layer, the lines are
  * joined back into paragraphs, since the layer itself only knows printed lines.
- * Everything else keeps the browser's own text.
+ * A recognised page's layer is not laid out text and is read as its words, with
+ * the spaces between them put back. Everything else keeps the browser's text.
  * @param {Range} range
  */
 export const getSelectionText = range => {
   try {
     const textLayer = getPdfTextLayer(range)
+    if (textLayer?.dataset.ocrLayer) return ocrSelectionText(textLayer, range)
     if (textLayer) return getPdfTextFromRange(range, textLayer)
   } catch (e) {
     console.warn('Failed to reassemble PDF text', e)

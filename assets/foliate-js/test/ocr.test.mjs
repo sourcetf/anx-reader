@@ -46,7 +46,7 @@ writeFileSync(join(dir, 'package.json'), '{"type":"module"}')
 writeFileSync(join(dir, 'ocr-layer.js'), readFileSync(join(SRC, 'ocr-layer.js')))
 const {
   nearestOcrWord, injectOcrTextLayer, wordIndexAt, pageHasOcrText, pageHasOwnText,
-  ocrWordsByPage, sectionIndexOfDoc,
+  ocrSelectionText, ocrWordsByPage, sectionIndexOfDoc,
 } = await import(join(dir, 'ocr-layer.js'))
 
 // ---------------------------------------------------------------------------
@@ -151,7 +151,38 @@ console.log('\n[3] the tolerance follows the page, not the candidate')
     `and a band a line apart is neither (“${wordAt(tall, 0.35, 0.29) ?? 'nothing'}”)`)
 }
 
-console.log('\n[4] an element the press landed on answers directly')
+console.log('\n[4] a selection over recognised words reads as words')
+{
+  const all = illustrated.concat(body)
+  const doc = page(all)
+  ocrWordsByPage.set(sectionIndexOfDoc(doc), all)
+  injectOcrTextLayer(doc, all)
+  const layer = doc.querySelector('.textLayer')
+  const span = i => doc.querySelector(`[data-ocr-word="${i}"]`)
+
+  // ‘Alice was beginning’ — three spans, nothing between them in the document.
+  const across = doc.createRange()
+  across.setStart(span(2).firstChild, 0)
+  across.setEnd(span(4).firstChild, span(4).firstChild.data.length)
+  ok(across.toString() === 'Alicewasbeginning',
+    `the page itself runs the words together (“${across.toString()}”)`)
+  ok(ocrSelectionText(layer, across) === 'Alice was beginning',
+    `but the selection reads as words (“${ocrSelectionText(layer, across)}”)`)
+
+  // A whole line, and a selection that starts mid-word.
+  const line = doc.createRange()
+  line.setStart(span(2).firstChild, 0)
+  line.setEnd(span(4).firstChild, 0)
+  ok(ocrSelectionText(layer, line) === 'Alice was',
+    `a selection ending on a word boundary keeps its words (“${ocrSelectionText(layer, line)}”)`)
+  const part = doc.createRange()
+  part.setStart(span(2).firstChild, 2)
+  part.setEnd(span(3).firstChild, 3)
+  ok(ocrSelectionText(layer, part) === 'ice was',
+    `and a partial word is carried as it is (“${ocrSelectionText(layer, part)}”)`)
+}
+
+console.log('\n[5] an element the press landed on answers directly')
 {
   const all = illustrated.concat(body)
   const doc = page(all)
